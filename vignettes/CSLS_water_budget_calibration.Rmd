@@ -1,0 +1,1031 @@
+---
+title: "CSLS_water_budget_cal"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+vignette: >
+  %\VignetteIndexEntry{CSLS_water_budget_cal}
+  %\VignetteEngine{knitr::rmarkdown}
+  \usepackage[utf8]{inputenc}
+---
+
+```{r setup, echo=FALSE, warning=FALSE, message=FALSE}
+library(CSLSfluxes)
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(reshape2)
+library(extrafont)
+library(NISTunits)
+library(stringr)
+
+```
+
+## Overview
+
+Here, I evaluate key assumptions involved in tracer-based approaches to
+estimating the water balance and determine that solute-based approaches (Mg &
+Ca) are likely to work for all lakes, but stable isotopes are only likely to be
+appropriate at Long Lake.
+
+Next, I compare stable-isotope and solute-based estimates of groundwater inflow
+to MODFLOW estimates of groundwater inflow during the calibration period.
+Solute-based estimates and MODFLOW-based estimates of groundwater inflow appear
+to be in good agreement at Pleasant Lake, but none of the tracer-based
+approaches yield good values for Long or Plainfield Lakes, making it difficult
+to evaluate the accuracy of the MODFLOW-based estimates.
+
+<br>
+
+## Evaluate suitability of tracers for estimating water balance
+
+From the detailed exploration of assumptions below, I conclude that the
+following tracer approaches are candidates for estimating the water balance at
+each lake:
+
+* **Pleasant Lake:** Isotopes are not appropriate for this lake, solutes should
+yield a better estimate. Assuming Mg is conservative, Ca should yield a similar
+value (but likely a slight underestimate due to calcification apparent at this
+lake).
+* **Long Lake:** Isotopes, Mg, and Ca are all likely to be good tracers at this
+lake.
+* **Plainfield Lake:** Isotopes are borderline appropriate - they may not yield
+a good estimate at this lake. Assuming Mg is conservative, Ca should yield a
+similar value (but likely a slight overestimation based on Ca:Mg relationships).
+
+
+### 1. Isotopes: Is lake deuterium excess less than 0?
+
+Deuterium excess is a measure of evaporation enrichment of the lake. The isotope
+water budget approach is only appropriate if there is a sufficiently large
+evaporation signal in the lake such that you can differentiate groundwater and
+lake water. Gurrieri and Furniss (2004) note that under atmospheric conditions
+similar to northwestern Montana, using O or H isotopes is a suitable approach as
+long as deuterium excess is less than approximately 0. Via detective work (on
+figures and tables), I conclude they use the minimum lake water deuterium excess
+to make this evaluation.
+
+Deuterium excess is defined as:
+
+$$ d = \delta^{2}H - 8*\delta^{18}O$$
+
+Pleasant Lake barely meets this threshold in October 2018, Plainfield Lake meets
+it in both October 2018 and October 2019, Long Lake is always ok based on this
+threshold.
+
+<br>
+
+```{r echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=3}
+d18O <- filter_parameter(param = "d18O") %>%
+        select(.data$lake, .data$site_type, .data$site_id, .data$date,
+               .data$description, .data$result, .data$flag) %>%
+        filter(.data$flag != "BAD_WELL")
+d2H  <- filter_parameter(param = "d2H")%>%
+        select(.data$lake, .data$site_type, .data$site_id, .data$date,
+               .data$description, .data$result, .data$flag) %>%
+        filter(.data$flag != "BAD_WELL")
+
+# By inspection, I conclude that Guerrieri et al evaluate the minimum value for
+# duterium excess for the lake. Vl
+deut_excess <- left_join(d18O, d2H, by = c("lake", "site_type", "site_id", "date")) %>%
+               filter(.data$site_type == "lake") %>%
+               mutate(d = .data$result.y - 8*.data$result.x)
+
+
+ggplot(deut_excess) +
+  geom_hline(yintercept = 0,
+             linetype = "dashed") +
+  geom_line(aes(x = .data$date, y = .data$d)) +
+  geom_point(aes(x = .data$date, y = .data$d)) +
+  labs(x = "", y = "Deuterium Excess (per mil)") +
+  facet_grid(~lake) +
+  scale_x_datetime(minor_breaks = "1 month") +
+  theme_bw() +
+  theme(text = element_text(family = "Segoe UI Semilight"),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+### 2. Isotopes: Is mean lake depth less than 3?
+
+Gurrieri and Furniss (2004) note that deuterium excess appears to correlate well
+with mean lake depth. Lakes with mean depth less than approximately 3m are more
+likely to meet this threshold than deeper lakes.
+
+Pleasant Lake is always well above this threshold, while Long Lake and
+Plainfield Lake consistently meet it during the study period.
+
+<br>
+
+```{r echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=3}
+lake_levels <- process_levels(start_date = min(deut_excess$date),
+                              end_date =  max(deut_excess$date))
+
+lake_levels$lake <- factor(lake_levels$lake, 
+                           levels = c("Pleasant", "Long", "Plainfield"))
+
+ggplot(lake_levels) +
+  geom_hline(yintercept = 3,
+             linetype = "dashed") +
+  geom_line(aes(x = .data$date, y = .data$vol_m3/.data$area_m2)) +
+  geom_point(aes(x = .data$date, y = .data$vol_m3/.data$area_m2)) +
+  labs(x = "", y = "Mean Lake Depth (m)") +
+  facet_grid(~lake) +
+  scale_x_datetime(minor_breaks = "1 month",
+                   date_labels = "%b %Y") +
+  theme_bw() +
+  theme(text = element_text(family = "Segoe UI Semilight"),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+### 3. Isotopes: Are groundwater and lake values sufficiently different?
+
+Due to the denominator $(C_{GWin} - C_{Lake})$ in the tracer-based water
+budget equation, calculations can blow up if $C_{GWin}$ and $C_{Lake}$ are too
+similar. Gurrieri and Furniss suggest that at least a 2 per mil difference in
+$\delta^{8}O$ and at least a 10 per mil difference in $\delta^{2}H$ are required
+to provide reasonable water balance results.
+
+Assuming the median groundwater value at each lake, all three lakes meet this
+criteria throughout the study period, with differences greatest during October
+2018 and October 2019.
+
+<br>
+
+```{r echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=3}
+GWin <- left_join(d18O, d2H, by = c("lake", "site_type", "site_id", "date")) %>%
+        filter(.data$site_type == "upgradient") %>%
+        select(lake = .data$lake, 
+               date = .data$date, 
+               d18O = .data$result.x, 
+               d2H = .data$result.y) %>%
+        group_by(.data$lake) %>%
+        summarise(d18O = median(.data$d18O, na.rm = TRUE),
+                  d2H = median(.data$d2H, na.rm = TRUE),
+                  .groups = "drop")
+
+lake <- left_join(d18O, d2H, by = c("lake", "site_type", "site_id", "date")) %>%
+        filter(.data$site_type == "lake") %>%
+        select(lake = .data$lake, 
+               date = .data$date, 
+               d18O = .data$result.x, 
+               d2H = .data$result.y) %>%
+        group_by(.data$lake) %>%
+        summarise(d18O = mean(c(min(.data$d18O, na.rm = TRUE),
+                                max(.data$d18O, na.rm = TRUE))),
+                  d2H = mean(c(min(.data$d2H, na.rm = TRUE),
+                                max(.data$d2H, na.rm = TRUE))),
+                  .groups = "drop") %>%
+        mutate(d = .data$d2H - 8*.data$d18O)
+
+mean_diff <- left_join(lake, GWin, by = "lake") %>%
+             mutate(d_d18O = .data$d18O.x - .data$d18O.y,
+                    d_d2H = .data$d2H.x - .data$d2H.y)
+
+diff <- left_join(d18O, d2H, by = c("lake", "site_type", "site_id", "date")) %>%
+        filter(.data$site_type == "lake") %>%
+        select(lake = .data$lake, 
+               date = .data$date, 
+               d18O = .data$result.x, 
+               d2H = .data$result.y) %>%
+        left_join(GWin, by = "lake") %>%
+        mutate(d_d18O = .data$d18O.x - .data$d18O.y,
+               d_d2H = .data$d2H.x - .data$d2H.y)
+
+ggplot(diff) +
+  geom_hline(yintercept = 2,
+             linetype = "dashed") +
+  geom_line(aes(x = .data$date, y = .data$d_d18O)) +
+  geom_point(aes(x = .data$date, y = .data$d_d18O)) +
+  labs(x = "", y = expression(paste("Difference in ", delta^{18}, "O"))) +
+  facet_grid(~lake) +
+  scale_x_datetime(minor_breaks = "1 month",
+                   date_labels = "%b %Y") +
+  theme_bw() +
+  theme(text = element_text(family = "Segoe UI Semilight"),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggplot(diff) +
+  geom_hline(yintercept = 10,
+             linetype = "dashed") +
+  geom_line(aes(x = .data$date, y = .data$d_d2H)) +
+  geom_point(aes(x = .data$date, y = .data$d_d2H)) +
+  labs(x = "", y = expression(paste("Difference in ", delta^{2}, "H"))) +
+  facet_grid(~lake) +
+  scale_x_datetime(minor_breaks = "1 month",
+                   date_labels = "%b %Y") +
+  theme_bw() +
+  theme(text = element_text(family = "Segoe UI Semilight"),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+### 4. Isotopes: Are groundwater values sufficiently constant to use median value?
+
+Travel time is slow enough that the stable isotope/concentration values in wells
+on a given month is not necessarily identical to the groundwater entering the
+lake on that month. Rather than assign importance to small variations in
+groundwater values, it may be more representative to use the median value at all
+times.
+
+<br>
+
+Here, we check to ensure that variations over time in upgradient groundwater
+values are minor. Dashed lines represent the median upgradient groundwater value
+measured at the given lake. Qualitatively, it looks like there _may_ be more
+variability in $\delta^{2}H$ than $\delta^{18}O$.
+
+<br>
+
+```{r echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=3.5}
+plot_isotopes <- function(df, 
+                          medians,
+                          median_col,
+                          site_types = c("upgradient",
+                                         "nogradient",
+                                         "downgradient",
+                                         "lake"),
+                          site_labels = c("Upgr.", "Nogr.", "Downgr.", "Lake"),
+                          site_colors = c("#33A02C", "#B15928", "#B2DF8A", "#FB9A99"),
+                          site_shapes = c(21, 21, 21, 24)) {
+  
+  colnames(medians)[colnames(medians) == median_col] <- "yintercept"
+  if (median_col == "d18O") {
+    ylabel <- expression(paste(delta^{18}, "O"))
+  } else if (median_col == "d2H") {
+    ylabel <- expression(paste(delta^{2}, "H"))
+  }
+
+  plot_obj <- ggplot(df) +
+              geom_line(aes(x = .data$date, 
+                            y = .data$result, 
+                            group = .data$site_id,
+                            shape = .data$site_type,
+                            color = .data$site_type)) +
+              geom_point(aes(x = .data$date, 
+                             y = .data$result, 
+                             group = .data$site_id,
+                             shape = .data$site_type,
+                             color = .data$site_type,
+                             fill = .data$site_type)) +
+              geom_hline(data = medians, 
+                         aes(yintercept = .data$yintercept),
+                         linetype = "dashed") +
+              labs(x = "", y = ylabel) +
+              facet_grid(~lake) +
+              scale_x_datetime(minor_breaks = "1 month") +
+              scale_color_manual(name = "Sites",
+                                 breaks = site_types,
+                                 limits = site_types,
+                                 labels = site_labels,
+                                 values = site_colors) +
+              scale_fill_manual(name = "Sites",
+                                breaks = site_types,
+                                limits = site_types,
+                                labels = site_labels,
+                                values = site_colors) +
+              scale_shape_manual(name = "Sites",
+                                 breaks = site_types,
+                                 limits = site_types,
+                                 labels = site_labels,
+                                 values = site_shapes) +
+              theme_bw() +
+              theme(text = element_text(family = "Segoe UI Semilight"),
+                    axis.text.x = element_text(angle = 45, hjust = 1),
+                    legend.position = "top")
+  return(plot_obj)
+}
+
+d18O <- d18O %>% filter(.data$site_type %in% c("upgradient", "downgradient", 
+                                               "nogradient", "lake"))
+d2H  <- d2H %>% filter(.data$site_type %in% c("upgradient", "downgradient", 
+                                              "nogradient", "lake"))
+
+plot_isotopes(d18O, GWin, "d18O")
+plot_isotopes(d2H, GWin, "d2H") + scale_y_continuous(limits = c(-75,-25))
+
+```
+
+### 5. Solutes: are tracers conservative?
+
+We assume Magnesium is conservative. If this is true, then any other
+conservative solutes should be linearly related to Magnesium, without sites
+(e.g. lake concentrations) falling off the line.
+
+Wells removed from these analysis include: PSNT-06 (high Na and Cl values) and
+PFL-09 (super high solutes across the board).
+
+Na, K, Cl, and SO4 have very poor fits with Mg at all three lakes. If Mg is
+conservative at these lakes, then these 4 solutes definitely are not
+conservative.
+
+The relationship with Ca is much closer at all three lakes, though the lake
+concentrations fall a little farther off the line at Pleasant and Plainfield
+lakes. If Mg is conservative at these lakes, then Ca may also be conservative,
+particularly at Long Lake.
+
+<br>
+
+```{r echo=FALSE, warning=FALSE, message=FALSE, fig.width=8, fig.height=8}
+solutes = data.frame(param = c("MAGNESIUM TOTAL RECOVERABLE",
+                               "CALCIUM TOTAL RECOVERABLE",
+                               "SODIUM TOTAL RECOVERABLE",
+                               "POTASSIUM TOTAL RECOVERABLE",
+                               "CHLORIDE",
+                               "SULFATE TOTAL"),
+                     name = c("Mg (mg/L)",
+                              "Ca (mg/L)",
+                              "Na (mg/L)",
+                              "K (mg/L)",
+                              "Cl (mg/L)",
+                              "SO4 (mg/L)"))
+all_params <- NULL
+for (i in 1:nrow(solutes)) {
+  param <- solutes$param[i]
+  name  <- solutes$name[i]
+  this_param <- filter_parameter(param = param, 
+                                 plotting_name = name,
+                                 no_bad_well = TRUE, 
+                                 note_lake_bottom = TRUE) %>%
+                filter(.data$site_type != "deep") %>%
+                select(.data$lake, .data$site_type, .data$site_id,
+                       .data$date, .data$name, .data$description,
+                       .data$result)
+  all_params <- rbind(all_params, this_param)
+}
+
+# Remove high PSNT well for Na and Cl
+all_params  <- all_params %>% 
+               filter(.data$site_id != "PSNT-06")
+
+pcpn_params <- all_params %>%
+               filter(.data$lake == "Precip")
+all_params  <- all_params %>%
+               filter(.data$lake != "Precip") %>%
+               rbind(mutate(pcpn_params, lake = "Pleasant")) %>%
+               rbind(mutate(pcpn_params, lake = "Long")) %>%
+               rbind(mutate(pcpn_params, lake = "Plainfield"))
+
+Mg_param    <- all_params %>% 
+               filter(.data$description == "MAGNESIUM TOTAL RECOVERABLE")
+other_param <- all_params %>% 
+               filter(.data$description != "MAGNESIUM TOTAL RECOVERABLE")
+all_params <- left_join(Mg_param, other_param,
+                        by = c("lake", "site_type", "site_id", "date"))
+
+
+site_types  <- c("precipitation", "upgradient", "nogradient", "downgradient", 
+                 "lake")
+site_labels <- c("Precip", "Upgr.", "Nogr.", "Downgr.", "Lake")
+site_colors <- c("#1F78B4", "#33A02C", "#B15928", "#B2DF8A", "#FB9A99")
+site_shapes <- c(15, 16, 16, 16, 17)
+
+
+ggplot(all_params,
+       aes(x = .data$result.y, 
+           y = .data$result.x)) +
+  geom_point(aes(color = .data$site_type,
+                 shape = .data$site_type,
+                 shape = .data$site_type)) +
+  geom_smooth(method = "lm", formula = y~x) +
+  facet_wrap(lake~name.y, scales = "free", ncol = 5) +
+  scale_color_manual(name = "Sites",
+                     breaks = site_types,
+                     limits = site_types,
+                     labels = site_labels,
+                     values = site_colors) +
+  scale_shape_manual(name = "Sites",
+                     breaks = site_types,
+                     limits = site_types,
+                     labels = site_labels,
+                     values = site_shapes) +
+  labs(x = "Concentration (mg/L)", y = "Mg (mg/L)") +
+  theme_bw() +
+  theme(text = element_text(family = "Segoe UI Semilight"),
+        legend.position = "top")
+
+```
+
+### Other assumptions or sources of error:
+
+* The tracer approach assumes hydrologic and chemical variations are
+unidirectional (continual increase, continual decrease, or no change) within the
+time interval (Fritz and Fontes, 1986).
+* In the isotope tracer approach, the calculation of $\delta_{E}$ is an
+important source of error due to uncertainties and assumptions in the
+calculation of $\delta_{A}$.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+lake_fluxes1 <- calculate_water_balance_tracer(param = "d18O",
+                                              start_date = as_datetime("2018-05-01"),
+                                              end_date = as_datetime("2019-10-31"),
+                                              dt = "month", mean_lake = FALSE)
+lake_fluxes2 <- calculate_water_balance_tracer(param = "d2H",
+                                              start_date = as_datetime("2018-05-01"),
+                                              end_date = as_datetime("2019-10-31"),
+                                              dt = "month", mean_lake = FALSE)
+lake_fluxes3 <- calculate_water_balance_tracer(param = "MAGNESIUM TOTAL RECOVERABLE",
+                                              start_date = as_datetime("2018-05-01"),
+                                              end_date = as_datetime("2019-10-31"),
+                                              dt = "month", mean_lake = FALSE)
+lake_fluxes4 <- calculate_water_balance_tracer(param = "CALCIUM TOTAL RECOVERABLE",
+                                              start_date = as_datetime("2018-05-01"),
+                                              end_date = as_datetime("2019-10-31"),
+                                              dt = "month", mean_lake = FALSE)
+
+lake_fluxes1a <- calculate_water_balance_tracer(param = "d18O",
+                                                start_date = as_datetime("2018-10-01"),
+                                                end_date = as_datetime("2019-09-30"))
+lake_fluxes2a <- calculate_water_balance_tracer(param = "d2H",
+                                                start_date = as_datetime("2018-10-01"),
+                                                end_date = as_datetime("2019-09-30"))
+lake_fluxes3a <- calculate_water_balance_tracer(param = "MAGNESIUM TOTAL RECOVERABLE",
+                                                start_date = as_datetime("2018-10-01"),
+                                                end_date = as_datetime("2019-09-30"),
+                                                mean_lake = FALSE)
+lake_fluxes4a <- calculate_water_balance_tracer(param = "CALCIUM TOTAL RECOVERABLE",
+                                                start_date = as_datetime("2018-10-01"),
+                                                end_date = as_datetime("2019-09-30"),
+                                                mean_lake = FALSE)
+MODFLOW <- CSLSdata::MODFLOW %>%
+           filter(!is.na(.data$GWin_m3),
+                  .data$scenario == "cal") %>%
+           mutate(GWin_m3 = -GWin_m3) %>%
+           select(.data$lake, .data$date, .data$level_m, .data$P_m3, .data$E_m3,
+                  .data$GWin_m3, .data$GWout_m3, .data$dV_m3)
+
+add_vol <- NULL
+for (lake in c("Pleasant", "Long", "Plainfield")) {
+  this_lake        <- filter(MODFLOW, .data$lake == !!lake)
+  this_bathy       <- filter(CSLSdata::bathymetry, .data$lake == !!lake)
+  fn_elev_vol      <- approxfun(this_bathy$elev_m, this_bathy$vol_m3)
+  this_lake$vol_m3 <- fn_elev_vol(this_lake$level_m)
+  fn_elev_area      <- approxfun(this_bathy$elev_m, this_bathy$area_m2)
+  this_lake$area_m2 <- fn_elev_area(this_lake$level_m)
+  add_vol <- rbind(add_vol, this_lake)
+}
+
+MODFLOW <- add_vol %>%
+           mutate(GWout_pcnt = 100*.data$GWout_m3/(.data$P_m3 + .data$GWin_m3),
+                  GWin_pcnt = 100*.data$GWin_m3/(.data$P_m3 + .data$GWin_m3),
+                  res_time_yr = .data$vol_m3/(12*(.data$P_m3 + .data$GWin_m3)))
+
+MODFLOWa <- MODFLOW %>%
+            mutate(water_year = ifelse(month(.data$date) >= 10, 
+                                       year(.data$date) + 1,
+                                       year(.data$date))) %>%
+            filter(!.data$water_year %in% c(2012,2019)) %>%
+            group_by(lake = .data$lake, date = water_year) %>%
+            summarise(vol_m3 = mean(.data$vol_m3),
+                      GWin_m3 = sum(.data$GWin_m3),
+                      P_m3 = sum(.data$P_m3),
+                      GWout_m3 = sum(.data$GWout_m3),
+                      E_m3 = -sum(.data$E_m3),
+                      dV_m3 = -sum(.data$dV_m3),
+                      GWin_pcnt = 100*.data$GWin_m3/(.data$GWin_m3+.data$P_m3),
+                      P_pcnt = 100*.data$P_m3/(.data$GWin_m3+.data$P_m3),
+                      GWout_pcnt = 100*.data$GWout_m3/(.data$GWin_m3+.data$P_m3),
+                      E_pcnt = 100*.data$E_m3/(.data$GWin_m3+.data$P_m3),
+                      dV_pcnt = 100*.data$dV_m3/(.data$GWin_m3+.data$P_m3),
+                      .groups = "drop")
+
+
+df1 <- MODFLOWa %>%
+                mutate(res_time_m3 = .data$vol_m3/(.data$GWin_m3+.data$P_m3)) %>%
+                filter(.data$date == "2018",
+                       .data$lake == "Pleasant") %>%
+                select(.data$lake, .data$date, .data$P_m3, .data$GWin_m3,
+                       .data$E_m3, .data$GWout_m3, .data$dV_m3,
+                       .data$P_pcnt, .data$GWin_pcnt, .data$E_pcnt, 
+                       .data$GWout_pcnt, .data$dV_pcnt, .data$res_time_m3)
+df2 <- lake_fluxes3a %>%
+                mutate(date = 2019,
+                       res_time_m3 = .data$vol_m3/(.data$GWin_m3+.data$P_m3)) %>%
+                filter(.data$lake == "Pleasant") %>%
+                select(.data$lake, .data$date, .data$P_m3, .data$GWin_m3,
+                       .data$E_m3, .data$GWout_m3, .data$dV_m3,
+                       .data$P_pcnt, .data$GWin_pcnt, .data$E_pcnt, 
+                       .data$GWout_pcnt, .data$dV_pcnt, .data$res_time_m3)
+
+combine_data <- rbind(df1, df2) %>%
+                melt(id.vars = c("date", "lake")) %>%
+                mutate(type = ifelse(str_detect(.data$variable, "_m3"),
+                                     "Volume (acre-ft)", "Percent (%)"),
+                       flux = str_replace(str_replace(.data$variable, 
+                                                      "_m3", ""),
+                                          "_pcnt", ""),
+                       value = ifelse(.data$type == "Volume (acre-ft)" &
+                                        .data$flux != "res_time",
+                                      NISTcubMeterTOacreFt(.data$value),
+                                      .data$value)) %>%
+                select(.data$type, .data$flux, .data$date, .data$value) %>%
+                arrange(.data$type, .data$flux, .data$date, .data$value)
+                
+
+
+
+```
+
+<br>
+
+## Estimation of water balance
+
+The key unknown in the water balance is groundwater inflow. Theoretically, all
+approaches deemed suitable above should match reasonably well with MODFLOW
+estimates of groundwater inflow in the last year of the calibration period. It
+may not be a perfect match, as the time periods are sligthly different (Jan
+2018-Dec 2018 MODFLOW vs. Oct 2018-Sept 2019 field data)
+
+<br>
+
+Overall, field data supports the MODFLOW estimates of groundwater flows at
+Pleasant Lake, but the field data we collected is insufficient to validate or
+invalidate MODFLOW estimates of groundwater flow at Long or Plainfield Lakes.
+
+<br>
+
+**Pleasant Lake**
+
+* Theoretically suitable approaches: Mg and Ca-based (though Ca-based likely
+underestimate)
+* Field data approaches with numerical errors: None
+* Conclusions: the solute-based approaches match well with the MODFLOW-based
+estimates, increasing confidence in those results.
+
+**Long Lake**
+
+* Theoretically suitable approaches: d18O, d2H, Mg, and Ca-based.
+* Field data approaches with numerical errors: d2H yields negative estimates for
+groundwater inflow and groundwater outflow, Mg and Ca yield negative estimates
+of groundwater outflow.
+* Conclusions: d18O, the only approach that yields a workable estimate of
+groundwater inflow, is about twice as high as MODFLOW estimates. However, others
+have noted that isotope-based approaches appear to overestimate the water budget
+at lakes in similar climatic settins (Northern Montana;Gurrieri and Furniss,
+2004)
+
+**Plainfield Lake**
+
+* Theoretically suitable approaches: Mg, and Ca-based. Maybe d18O and d2H, but
+this is questionable.
+* Field data approaches with numerical errors: d2H, Mg, and Ca yield negative
+estimates of groundwater outflow.
+* Conclusions: d18O, the only approach that yields a workable estimate of
+groundwater inflow, is about six times as high as MODFLOW estimates. However,
+this approach may not be suitable based on key assumptions, and others haven
+noted that istope-based approaches appear to overestimate the water budget at
+lakes in similar climatic settins (Northern Montana;Gurrieri and Furniss, 2004)
+
+Since others have observed that stable isotope-based approaches tend to
+overestimate the water budget, I place more weight on the MODFLOW-derived
+fluxes. Though I note it does not seem likely that Long Lake has similar
+groundwater inflow as Pleasant Lake, higher than Plainfield Lake. Long Lake
+appears to be a precipitation-dominated lake based on its lake water chemistry.
+
+<br>
+
+### MODFLOW Groundwater Inflow
+
+A close look at the monthly estimates of groundwater inflow during the MODFLOW
+calibration period.
+
+<br>
+
+```{r echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=5}
+ggplot() +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_line(data = MODFLOW,
+            aes(x = .data$date,
+                y = NISTmeterTOinch(.data$GWin_m3/.data$vol_m3),
+                color = "MODFLOW")) +
+  labs(x = "", y = "Groundwater Inflow (in)", color = "") +
+  scale_color_manual(values = c("black", "blue", "red", "orange"),
+                     breaks = c("MODFLOW", 
+                                "d18O Stable Isotopes",
+                                "d2H Stable Isotopes",
+                                "Magnesium")) +
+  facet_wrap(~lake, scales = "free_y", ncol = 1) +
+  theme_bw()+
+  theme(text = element_text(family = "Segoe UI Semilight"),
+        legend.position = "top")
+```
+
+<br>
+
+### Monthly Groundwater Inflow: Tracers + MODFLOW
+
+**Isotope Tracers**
+
+Estimates of groundwater inflow based on O and H isotopes were only likely to be
+reasonable at Long Lake. But at all lakes, monthly estimates based on O isotopes
+are far higher than any other estimate, and estimates based on H isotopes can be
+quite negative during spring and fall turnover periods (April and October). 
+
+Gurrieri and Furniss (2004) also noted that at the Montana lakes they studied,
+isotopes were useful for describing the hydrology of a watershed but did not
+perform as well as expected in calculating a water balance. At some of their
+lakes, similarity between groundwater and lake water isotopes caused instability
+and resulted in erroneous (I assume negative) results. At another lake, a
+reasonable value could be calculated using d2H but not d18O. At yet another
+lake, isotope enrichment was pronounced and theoretically conditions were ideal
+for the isotope-based water balance calculations, yet the isotope-based budget
+seemed to overestimate groundwater inflow and outflow.
+
+<br>
+
+**Solute Tracers**
+
+Estimates of groundwater inflow based on Mg and Ca are overall more similar in
+magnitude to MODFLOW values, but they do not appear to work on a monthly basis,
+as values are frequently negative. This may indicate Mg and Ca were not
+conservative on a monthly time step at these study lakes.
+
+<br>
+
+```{r echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=5}
+ggplot() +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_line(data = MODFLOW,
+            aes(x = .data$date,
+                y = NISTmeterTOinch(.data$GWin_m3/.data$area_m2),
+                color = "MODFLOW")) +
+  geom_point(data = filter(lake_fluxes1, month(.data$date) %in% c(4,5,6,7,8,9,10)),
+            aes(x = .data$date,
+                y = NISTmeterTOinch(.data$GWin_m3/.data$area_m2),
+                color = "d18O Stable Isotopes")) +
+  geom_point(data = filter(lake_fluxes2, month(.data$date) %in% c(4,5,6,7,8,9,10)),
+            aes(x = .data$date,
+                y = NISTmeterTOinch(.data$GWin_m3/.data$area_m2),
+                color = "d2H Stable Isotopes"))  +
+  geom_point(data = lake_fluxes3,
+            aes(x = .data$date,
+                y = NISTmeterTOinch(.data$GWin_m3/.data$area_m2),
+                color = "Magnesium")) +
+  geom_point(data = lake_fluxes4,
+            aes(x = .data$date,
+                y = NISTmeterTOinch(.data$GWin_m3/.data$area_m2),
+                color = "Calcium")) +
+  labs(x = "", y = "Groundwater Inflow (in)", color = "") +
+  scale_color_manual(values = c("black", "blue", "red", "orange", "purple"),
+                     breaks = c("MODFLOW", 
+                                "d18O Stable Isotopes",
+                                "d2H Stable Isotopes",
+                                "Magnesium",
+                                "Calcium")) +
+  facet_wrap(~lake, scales = "free_y", ncol = 1) +
+  theme_bw()+
+  theme(text = element_text(family = "Segoe UI Semilight"),
+        legend.position = "top")
+```
+
+<br>
+
+### Annual Groundwater Inflow: Tracers + MODFLOW
+
+**Isotope Tracers**
+
+Again, recall that estimates of groundwater inflow based on O and H isotopes
+were only likely to be reasonable at Long Lake. The annual time scale clearly
+shows that d18O-based estimates are consistently high at all lakes and d2H-based
+estimates are low or unstable (negative) at all lakes.
+
+<br>
+
+**Solute Tracers**
+
+Estimates of groundwater inflow based on Mg and Ca are overall more similar in
+magnitude to MODFLOW values.
+
+At **Pleasant Lake** in particular, the Mg-based estimate is nearly identical to the
+MODFLOW estimate, with the Ca-based estimate falling slightly lower as expected
+for a lake where we know calcification occurs.
+
+At **Long Lake**, the Mg-based and Ca-based estimates are very similar, but
+quite a bit lower than the MODFLOW estimate. While the MODFLOW estimate
+indicates that groundwater inflow is similar at Long and Pleasant Lakes on a
+percent basis, chemistry signals indicate that Long Lake is substantially more
+precipitation-dominated than Pleasant Lake. This discrepancy in groundwater
+inflow values between solute-based estimates and the MODFLOW-based estimate is
+therefore unsurprising, and on the surface, seem to call into question the
+validity of the MODFLOW results. However, I will also note that the Ca-based and
+Mg-based estimates of groundwater inflow are so low that they require negative
+groundwater outflow values for the water balance to close.
+
+At **Plainfield Lake**, the Ca-based estimate is nearly identical to the MODFLOW
+estimate while the Mg-based estimate is substantially lower. As at Long Lake,
+both the Ca-based and Mg-based estimates of groundwater inflow at Plainfield
+Lake are so low that negative groundwater outflow values are required to close
+the water balance.
+
+<br>
+
+```{r echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=5}
+# ggplot() +
+#   geom_hline(yintercept = 0, linetype = "dashed") +
+#   geom_line(data = MODFLOWa,
+#             aes(x = .data$date,
+#                 y = NISTmeterTOinch(.data$GWin_m3/.data$area_m2),
+#                 color = "MODFLOW")) +
+#   geom_point(data = MODFLOWa,
+#             aes(x = .data$date,
+#                 y = NISTmeterTOinch(.data$GWin_m3/.data$area_m2),
+#                 color = "MODFLOW")) +
+#   geom_point(data = lake_fluxes1a,
+#             aes(x = 2018,
+#                 y = NISTmeterTOinch(.data$GWin_m3/.data$area_m2),
+#                 color = "d18O Stable Isotopes")) +
+#   geom_point(data = lake_fluxes2a,
+#             aes(x = 2018,
+#                 y = NISTmeterTOinch(.data$GWin_m3/.data$area_m2),
+#                 color = "d2H Stable Isotopes"))  +
+#   geom_point(data = lake_fluxes3a,
+#             aes(x = 2018,
+#                 y = NISTmeterTOinch(.data$GWin_m3/.data$area_m2),
+#                 color = "Magnesium")) +
+#   geom_point(data = lake_fluxes4a,
+#             aes(x = 2018,
+#                 y = NISTmeterTOinch(.data$GWin_m3/.data$area_m2),
+#                 color = "Calcium")) +
+#   labs(x = "", y = "Groundwater Inflow (in)", color = "") +
+#   scale_color_manual(values = c("black", "blue", "red", "orange", "purple"),
+#                      breaks = c("MODFLOW", 
+#                                 "d18O Stable Isotopes",
+#                                 "d2H Stable Isotopes",
+#                                 "Magnesium",
+#                                 "Calcium")) +
+#   facet_wrap(~lake, scales = "free_y", ncol = 1) +
+#   theme_bw()+
+#   theme(text = element_text(family = "Segoe UI Semilight"),
+#         legend.position = "top")
+
+ggplot() +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_line(data = MODFLOWa,
+            aes(x = .data$date,
+                y = NISTcubMeterTOacreFt(.data$GWin_m3),
+                color = "MODFLOW")) +
+  geom_point(data = MODFLOWa,
+            aes(x = .data$date,
+                y = NISTcubMeterTOacreFt(.data$GWin_m3),
+                color = "MODFLOW")) +
+  geom_point(data = lake_fluxes1a,
+            aes(x = 2018,
+                y = NISTcubMeterTOacreFt(.data$GWin_m3),
+                color = "d18O Stable Isotopes")) +
+  geom_point(data = lake_fluxes2a,
+            aes(x = 2018,
+                y = NISTcubMeterTOacreFt(.data$GWin_m3),
+                color = "d2H Stable Isotopes"))  +
+  geom_point(data = lake_fluxes3a,
+            aes(x = 2018,
+                y = NISTcubMeterTOacreFt(.data$GWin_m3),
+                color = "Magnesium")) +
+  geom_point(data = lake_fluxes4a,
+            aes(x = 2018,
+                y = NISTcubMeterTOacreFt(.data$GWin_m3),
+                color = "Calcium")) +
+  labs(x = "", y = "Groundwater Inflow (ac-ft)", color = "") +
+  scale_color_manual(values = c("black", "blue", "red", "orange", "purple"),
+                     breaks = c("MODFLOW", 
+                                "d18O Stable Isotopes",
+                                "d2H Stable Isotopes",
+                                "Magnesium",
+                                "Calcium")) +
+  facet_wrap(~lake, scales = "free_y", ncol = 1) +
+  theme_bw()+
+  theme(text = element_text(family = "Segoe UI Semilight"),
+        legend.position = "top")
+```
+
+## Display calibration period water budget
+
+### Budget as %
+
+<br>
+
+```{r echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=6}
+MODFLOW <- CSLSdata::MODFLOW %>%
+           filter(!is.na(.data$GWin_m3),
+                  .data$sim %in% c(0,1),
+                  .data$scenario == "cal") %>%
+           mutate(GWin_m3 = -.data$GWin_m3,
+                  E_m3 = -.data$E_m3,
+                  dV_m3 = -.data$dV_m3) %>%
+           select(.data$lake, .data$date, .data$level_m, .data$P_m3, .data$E_m3,
+                  .data$GWin_m3, .data$GWout_m3, .data$dV_m3)
+
+add_vol <- NULL
+for (lake in c("Pleasant", "Long", "Plainfield")) {
+  this_lake         <- filter(MODFLOW, .data$lake == !!lake)
+  this_bathy        <- filter(CSLSdata::bathymetry, .data$lake == !!lake)
+  fn_elev_vol       <- approxfun(this_bathy$elev_m, this_bathy$vol_m3)
+  this_lake$vol_m3  <- fn_elev_vol(this_lake$level_m)
+  fn_elev_area      <- approxfun(this_bathy$elev_m, this_bathy$area_m2)
+  this_lake$area_m2 <- fn_elev_area(this_lake$level_m)
+  add_vol <- rbind(add_vol, this_lake)
+}
+
+inches_df <- add_vol %>%
+             mutate(GWin = NISTmeterTOinch(.data$GWin_m3/.data$area_m2),
+                    P = NISTmeterTOinch(.data$P_m3/.data$area_m2),
+                    E = NISTmeterTOinch(.data$E_m3/.data$area_m2),
+                    GWout = NISTmeterTOinch(.data$GWout_m3/.data$area_m2),
+                    dV = NISTmeterTOinch(.data$dV_m3/.data$area_m2),
+                    vol = NISTmeterTOinch(.data$vol_m3/.data$area_m2)) %>%
+             select(.data$date, .data$lake, .data$GWin, .data$P, 
+                    .data$E, .data$GWout, .data$dV, .data$vol) %>%
+             group_by(date = year(.data$date), lake = .data$lake) %>%
+             summarise(GWin = sum(.data$GWin),
+                       P = sum(.data$P),
+                       E = sum(.data$E),
+                       GWout = sum(.data$GWout),
+                       dV = sum(.data$dV),
+                       vol = mean(.data$vol),
+                       .groups = "drop")
+
+acft_df   <- add_vol %>%
+             mutate(GWin_m3 = NISTcubMeterTOacreFt(.data$GWin_m3),
+                    P_m3 = NISTcubMeterTOacreFt(.data$P_m3),
+                    E_m3 = NISTcubMeterTOacreFt(.data$E_m3),
+                    GWout_m3 = NISTcubMeterTOacreFt(.data$GWout_m3),
+                    dV_m3 = NISTcubMeterTOacreFt(.data$dV_m3),
+                    vol_m3 = NISTcubMeterTOacreFt(.data$vol_m3)) %>%
+             group_by(date = year(.data$date), 
+                      lake = .data$lake) %>%
+             summarise(GWin = sum(.data$GWin_m3, na.rm = TRUE),
+                       P = sum(.data$P_m3, na.rm = TRUE),
+                       E = sum(.data$E_m3, na.rm = TRUE),
+                       GWout = sum(.data$GWout_m3, na.rm = TRUE),
+                       dV = sum(.data$dV_m3, na.rm = TRUE),
+                       vol = mean(.data$vol_m3, na.rm = TRUE),
+                       .groups = "drop") %>%
+             select(.data$date, .data$lake, .data$GWin, .data$P, 
+                    .data$E, .data$GWout, .data$dV, .data$vol)
+
+pcnt_df <- add_vol %>%
+           group_by(date = year(.data$date), lake = .data$lake) %>%
+           summarise(GWin_m3 = sum(.data$GWin_m3),
+                     P_m3 = sum(.data$P_m3),
+                     E_m3 = sum(.data$E_m3),
+                     GWout_m3 = sum(.data$GWout_m3),
+                     dV_m3 = sum(.data$dV_m3),
+                     inflow = ifelse(.data$dV_m3 < 0,
+                                     -.data$dV_m3 + .data$GWin_m3 + .data$P_m3,
+                                     .data$GWin_m3 + .data$P_m3),
+                     outflow = ifelse(.data$dV_m3 > 0,
+                                     .data$dV_m3 + .data$GWout_m3 + .data$E_m3,
+                                     .data$GWout_m3 + .data$E_m3),
+                     .groups = "drop") %>%
+           mutate(GWin = 100*.data$GWin_m3/.data$inflow,
+                     P = 100*.data$P_m3/.data$inflow,
+                     E = 100*.data$E_m3/.data$outflow,
+                     GWout = 100*.data$GWout_m3/.data$outflow,
+                     dV = ifelse(.data$dV_m3 < 0,
+                                 100*.data$dV_m3/.data$inflow,
+                                 100*.data$dV_m3/.data$outflow))
+
+table_acft <- acft_df %>%
+                mutate(res_time = .data$vol/(.data$GWin+.data$P),
+                       dV = -.data$dV) %>%
+                select(.data$date, .data$lake, .data$P, .data$GWin, 
+                       .data$E, .data$GWout, .data$dV, .data$res_time) %>%
+                melt(id.vars = c("date", "lake")) %>%
+                group_by(.data$lake, .data$variable) %>%
+                summarise(min = round(min(.data$value),1),
+                          median = round(median(.data$value),1),
+                          max = round(max(.data$value),1),
+                          .groups = "drop") %>%
+                arrange(.data$lake, .data$variable)
+table_pcnt <- pcnt_df %>%
+                mutate(dV = -.data$dV) %>%
+                select(.data$date, .data$lake, .data$P, .data$GWin, 
+                       .data$E, .data$GWout, .data$dV) %>%
+                melt(id.vars = c("date", "lake")) %>%
+                group_by(.data$lake, .data$variable) %>%
+                summarise(min = round(min(.data$value),1),
+                          median = round(median(.data$value),1),
+                          max = round(max(.data$value),1),
+                          .groups = "drop") %>%
+                arrange(.data$lake, .data$variable)
+
+```
+
+```{r echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=6}
+plot_bars <- function(plot_df, ylabel,
+                      fill = list(breaks = c("GWin","GWout","P","E","dV"),
+                                  labels = c("GW Inflow",
+                                             "GW Outflow",
+                                             "Precipitation",
+                                             "Evaporation",
+                                             expression(paste(Delta," Lake Volume"))),
+                                  values = c("#33A02C",
+                                             "#B2DF8A",
+                                             "#1F78B4",
+                                             "#A6CEE3",
+                                             "#FB9A99"))) {
+  plot_df$variable = factor(as.character(plot_df$variable),
+                            levels = rev(c("GWin","GWout","P","E","dV")))
+  plot_df <- plot_df %>%
+    rbind(data.frame(lake = "Pleasant",
+                     date = seq(2012,2018,1),
+                     variable = "GWout",
+                     value = 0,
+                     direction = "null"))
+  plot_df$direction <- factor(plot_df$direction,
+                              levels = c("In", "Out", "null"))
+  
+  plot_obj <- ggplot(data = plot_df,
+                     aes(x = as.numeric(interaction(.data$direction, .data$date)),
+                         y = .data$value,
+                         fill = .data$variable)) +
+    geom_col() +
+    facet_wrap(~lake, ncol = 1) +
+    scale_x_continuous(breaks = seq(1.5,21.5,3),
+                       labels = as.character(seq(2012, 2018,1)),
+                       limits = c(0,21),
+                       expand = c(0,0)) +
+    scale_y_continuous(expand = c(0,0),
+                       breaks = seq(0,100,20),
+                       minor_breaks = seq(0,100,10)) +
+    scale_fill_manual(name = "",
+                      breaks = fill$breaks,
+                      labels = fill$labels,
+                      values = fill$values) +
+    labs(x = "",
+         y = ylabel) +
+    theme_bw() +
+    theme(text = element_text(family = "Segoe UI Semilight",
+                              size = 13),
+          plot.title = element_text(hjust = 0.5),
+          legend.text.align = 0,
+          legend.position = "top") 
+  return(plot_obj)
+}
+
+plot_df <- pcnt_df %>%
+           select(.data$date, .data$lake, .data$GWin, .data$P, 
+                     .data$E, .data$GWout, .data$dV) %>%
+           melt(id.vars = c("date", "lake")) %>%
+           mutate(direction = ifelse(.data$variable %in% c("GWin", "P"),
+                                     "In", 
+                                     ifelse(.data$variable %in% 
+                                              c("GWout", "E"),
+                                            "Out",
+                                            ifelse(.data$value < 0,
+                                                   "In", "Out"))),
+                  value = abs(.data$value))
+
+plot_bars(plot_df, "Flux (%)")
+```
+
+<br>
+
+### Budget as inches
+
+<br>
+
+```{r echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=6}
+plot_df <- inches_df %>%
+           select(.data$date, .data$lake, .data$GWin, .data$P, 
+                     .data$E, .data$GWout, .data$dV) %>%
+           melt(id.vars = c("date", "lake")) %>%
+           mutate(direction = ifelse(.data$variable %in% c("GWin", "P"),
+                                     "In", 
+                                     ifelse(.data$variable %in% 
+                                              c("GWout", "E"),
+                                            "Out",
+                                            ifelse(.data$value < 0,
+                                                   "In", "Out"))),
+                  value = abs(.data$value))
+
+plot_bars(plot_df, "Flux (in)")
+```
+
+<br>
+
+### Budget as volume
+
+<br>
+
+```{r echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=6}
+plot_df <- acft_df %>%
+           select(.data$date, .data$lake, .data$GWin, .data$P, 
+                     .data$E, .data$GWout, .data$dV) %>%
+           melt(id.vars = c("date", "lake")) %>%
+           mutate(direction = ifelse(.data$variable %in% c("GWin", "P"),
+                                     "In", 
+                                     ifelse(.data$variable %in% 
+                                              c("GWout", "E"),
+                                            "Out",
+                                            ifelse(.data$value < 0,
+                                                   "In", "Out"))),
+                  value = abs(.data$value))
+
+plot_bars(plot_df, "Flux (ac-ft)") + scale_y_continuous() +
+    facet_wrap(~lake, ncol = 1, scales = "free_y")
+plot_budget <- plot_bars(plot_df, "Flux (ac-ft)") + 
+               scale_y_continuous() +
+               facet_wrap(~lake, ncol = 1, scales = "free_y")
+ggsave("water_budget.png", plot_budget, device = "png", width = 6.5, height = 6, units = "in", dpi = 600)
+```

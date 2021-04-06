@@ -1,0 +1,116 @@
+---
+title: "CSLS_stratification"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+vignette: >
+  %\VignetteIndexEntry{CSLS_stratification}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, echo=FALSE, eval=TRUE, warning=FALSE, message=FALSE}
+library(dplyr)
+library(ggplot2)
+library(NISTunits)
+library(patchwork)
+library(extrafont)
+
+text_size    <- 10
+```
+
+# Pleasant Lake Stratification
+
+```{r strat, eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=3.5, fig.align="center"}
+# Plot ratio vs. elevation -----------------------------------------------------
+plot_stratification <- function(bathymetry, psnt_probs, threshold_ratio, 
+                                text_size = 10) {
+  threshold_elev <- approx(x = bathymetry$ratio, 
+                           y = bathymetry$elev_ft, 
+                           xout = threshold_ratio)$y
+  
+  thresholds <- data.frame(ratio = c(0, threshold_ratio,
+                                     threshold_ratio, threshold_ratio),
+                           elev_ft = c(threshold_elev, threshold_elev,
+                                       threshold_elev, min(bathymetry$elev_ft)))
+  plot_obj <- ggplot() +
+            geom_path(data = bathymetry,
+                      aes(x = ratio, y = elev_ft),
+                      size = 1) +
+            geom_path(data = thresholds,
+                       aes(x = ratio, y = elev_ft),
+                       linetype = "dashed") +
+            geom_text(data = data.frame(x = threshold_ratio - 0.25,
+                                         y = threshold_elev - 1,
+                                         label = sprintf("%.1f ft", threshold_elev)),
+                       aes(x = x, y = y, label = label),
+                      hjust = 1,
+                      family = "Segoe UI Semilight",
+                      size = 3) +
+            geom_rect(data = data.frame(ymin = psnt_probs$value[psnt_probs$variable == "90"],
+                                        ymax = psnt_probs$value[psnt_probs$variable == "10"],
+                                        xmin = -Inf,
+                                        xmax = Inf),
+                      aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
+                      fill = "grey", alpha = 0.5) +
+            geom_hline(yintercept = psnt_probs$value[psnt_probs$variable == "50"]) +
+            labs(x = "Lathrop/Lillie Ratio",
+                 y = "Lake Elevation (ft)") +
+            scale_x_continuous(expand = c(0,0),
+                               limits = c(0,max(bathymetry$ratio))) +
+            scale_y_continuous(expand = c(0,0)) +
+            theme_bw() +
+            theme(text = element_text(family = "Segoe UI Semilight",
+                                        size = text_size),
+                  plot.title = element_text(hjust = 0.5))
+return(plot_obj)
+}
+
+lake <- "Pleasant"
+bathymetry <- CSLSdata::bathymetry
+bathymetry <- bathymetry %>% filter(.data$lake == !!lake)
+bathymetry$elev_ft <- NISTmeterTOft(bathymetry$elev_m)
+
+# Calculate maximum depth (meters)
+psnt_raster <- CSLSdata::lake_raster[[lake]]
+min_elev    <- raster::minValue(psnt_raster)
+bathymetry <- bathymetry %>%
+                 arrange(.data$elev_m) %>%
+                 mutate(max_depth_m = .data$elev_m - min_elev,
+                        mean_depth_m = .data$vol_m3/.data$area_m2)
+
+# Calculate log10 lake area
+bathymetry$area_ha  <- NISTsqrMeterTOhectare(bathymetry$area_m2)
+bathymetry$area_km2 <- 1e-6*bathymetry$area_m2
+
+# Calculate 10, 50, 90 exceedance levels
+psnt_probs <- CSLSscenarios::MODFLOW_metrics %>%
+               filter(.data$series == "month",
+                      .data$scenario == "no_irr",
+                      .data$sim == 1,
+                      .data$metric == "exceedance_level",
+                      .data$lake == "Pleasant") %>%
+               mutate(value = NISTmeterTOft(.data$value))
+# ------------------------------------------------------------------------------
+
+# Calculate Lathrop/Lillie ratio
+bathymetry$ratio   <- (bathymetry$max_depth_m - 0.1)/
+                         log10(bathymetry$area_ha)
+p1 <- plot_stratification(bathymetry, psnt_probs, threshold_ratio = 3.8)
+
+# Calculate MN Lake Geometry Ratio
+bathymetry$ratio   <- (bathymetry$area_m2^0.25)/
+                         (bathymetry$max_depth_m)
+p2 <- plot_stratification(filter(bathymetry, ratio != 0), psnt_probs, threshold_ratio = 4) + 
+      scale_x_continuous(limits = c(0,14)) + 
+      labs(x = "MN Ratio", y = "")
+
+# Oswold Index
+bathymetry$ratio   <- (bathymetry$mean_depth_m)/
+                         sqrt(bathymetry$area_km2)
+p3 <- plot_stratification(bathymetry, psnt_probs, threshold_ratio = 6)+ 
+      labs(x = "Osgood Index", y = "")
+
+p1 + p2 + p3
+
+```

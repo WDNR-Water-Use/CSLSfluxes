@@ -1,0 +1,879 @@
+---
+title: "MODFLOW_chem_eval"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+vignette: >
+  %\VignetteIndexEntry{MODFLOW_chem_eval}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, echo=FALSE, eval=TRUE, warning=FALSE, message=FALSE}
+library(dplyr)
+library(CSLSfluxes)
+library(reshape2)
+library(ggplot2)
+library(NISTunits)
+library(extrafont)
+library(lubridate)
+library(DT)
+
+lakes     <- c("Pleasant", "Long", "Plainfield")
+scenarios <- c("no_irr", "cur_irr")
+text_size <- 12
+
+# Exceedance Probabilities
+exceeds     <- CSLSscenarios::MODFLOW_metrics %>%
+               filter(.data$sim == 1,
+                      .data$scenario %in% scenarios,
+                      .data$metric == "exceedance_level",
+                      .data$series == "month") %>%
+               select(lake = .data$lake,
+                      probs = .data$variable,
+                      yintercept = .data$value,
+                      scenario = .data$scenario)
+bold_line   <- exceeds %>% filter(.data$probs %in% c("50"))
+solid_line  <- exceeds %>% filter(.data$probs %in% c("10","90"))
+dashed_line <- exceeds %>% filter(.data$probs %in% c("25","75"))
+```
+
+
+# MODFLOW Water Balance Dynamics
+
+For reference, here are the annual groundwater inflow (% of P+GWin), groundwater
+outflow (% of P+GWin), and lake water residence times (Vlake/(P+GWin)) under
+recent climate conditions, with "no irrigation" and "current irrigation" land
+use conditions.
+
+
+Note that this is NOT a recreation of history - years refer to climate
+conditions only, not actual or projected lake levels in the past.
+
+<br>
+
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.height=3, fig.width=6.5}
+MODFLOW <- CSLSdata::MODFLOW %>%
+           filter(!is.na(.data$GWin_m3),
+                  .data$scenario  %in% scenarios,
+                  .data$sim == 1,
+                  year(.data$date) >= 1986) %>%
+           mutate(GWin_m3 = -GWin_m3) %>%
+           select(.data$lake, .data$date, .data$level_m, .data$P_m3, .data$E_m3,
+                  .data$GWin_m3, .data$GWout_m3, .data$dV_m3, .data$scenario)
+
+add_vol <- NULL
+for (lake in lakes) {
+  this_lake        <- filter(MODFLOW, .data$lake == !!lake)
+  this_bathy       <- filter(CSLSdata::bathymetry, .data$lake == !!lake)
+  fn_elev_vol      <- approxfun(this_bathy$elev_m, this_bathy$vol_m3)
+  this_lake$vol_m3 <- fn_elev_vol(this_lake$level_m)
+  add_vol <- rbind(add_vol, this_lake)
+}
+
+MODFLOW <- add_vol %>%
+           mutate(GWout_pcnt = 100*.data$GWout_m3/(.data$P_m3 + .data$GWin_m3),
+                  GWin_pcnt = 100*.data$GWin_m3/(.data$P_m3 + .data$GWin_m3),
+                  res_time_yr = .data$vol_m3/(12*(.data$P_m3 + .data$GWin_m3)))
+
+MODFLOW_yr <- MODFLOW %>%
+              group_by(lake = .data$lake,
+                       scenario = .data$scenario,
+                       year = year(.data$date)) %>%
+              summarise(GWout_m3 = sum(.data$GWout_m3),
+                        GWin_m3 = sum(.data$GWin_m3),
+                        P_m3 = sum(.data$P_m3),
+                        vol_m3 = mean(.data$vol_m3, na.rm = TRUE),
+                        .groups = "drop") %>% 
+              mutate(GWout_pcnt = 100*.data$GWout_m3/(.data$P_m3 + .data$GWin_m3),
+                     GWin_pcnt = 100*.data$GWin_m3/(.data$P_m3 + .data$GWin_m3),
+                     res_time_yr = .data$vol_m3/(.data$P_m3 + .data$GWin_m3))
+
+ggplot(MODFLOW_yr) +
+  geom_line(aes(x = .data$year-1986,
+                y = .data$GWin_pcnt,
+                group = .data$scenario,
+                color = .data$scenario)) +
+  facet_grid(~lake) +
+  scale_color_manual(name = "",
+                     values = c("steelblue4", "goldenrod1"),
+                     breaks = c("no_irr", "cur_irr"),
+                     labels = c("No Irrigation",
+                                "Current Irrigation")) +
+  labs(x = "", y = "Groundwater Inflow (%)", linetype = "") +
+  theme_bw() +
+  theme(text = element_text(family = "Segoe UI Semilight"),
+        legend.position = "top")
+
+ggplot(MODFLOW_yr) +
+  geom_line(aes(x = .data$year-1986,
+                y = .data$GWout_pcnt,
+                 group = .data$scenario,
+                 color = .data$scenario)) +
+  scale_color_manual(name = "",
+                     values = c("steelblue4", "goldenrod1"),
+                     breaks = c("no_irr", "cur_irr"),
+                     labels = c("No Irrigation",
+                                "Current Irrigation")) +
+  facet_grid(~lake) +
+  scale_y_continuous(limits = c(0,100),
+                     breaks = seq(0,100,20),
+                     expand = c(0,0)) +
+  labs(x = "", y = "Groundwater Outflow (%)", linetype = "") +
+  theme_bw() +
+  theme(text = element_text(family = "Segoe UI Semilight"),
+        legend.position = "top")
+
+ggplot(MODFLOW_yr) +
+  geom_line(aes(x = .data$year-1986,
+                y = .data$res_time_yr,
+                 group = .data$scenario,
+                 color = .data$scenario)) +
+  facet_grid(~lake) +
+  scale_color_manual(name = "",
+                     values = c("steelblue4", "goldenrod1"),
+                     breaks = c("no_irr", "cur_irr"),
+                     labels = c("No Irrigation",
+                                "Current Irrigation")) +
+  labs(x = "", y = "Lake Residence Time (yr)", linetype = "") +
+  theme_bw() +
+  theme(text = element_text(family = "Segoe UI Semilight"),
+        legend.position = "top")
+```
+
+<br>
+
+# MODFLOW Mg Budget
+
+## 1. Tune groundwater inflow concentration
+
+### Theory
+
+We start with Magnesium, which should be very conservative, so the following
+(very simple) mass-balance equations should hold:
+
+$$ \Delta Storage = In - Out $$
+$$ M_{lake2} - M_{lake1} = M_{GWin} + M_{Precip} - M_{GWout}$$
+$$ (C_{lake2}*V_{lake2} ) = (C_{lake1}*V_{lake1} )+ (C_{GWin}*V_{GWin}) + (C_{Precip}*V_{Precip}) - (C_{lake1}*V_{GWout})$$
+
+$$C_{GWin} = \frac{(C_{lake2}*V_{lake2}) - (C_{lake1}*V_{lake1}) -(C_{Precip}*V_{Precip}) + (C_{GWout}*V_{GWout})}{V_{GWin}}$$
+
+<br>
+
+### Calculated Groundwater Inflow Concentrations
+
+We make the following assumptions about volumes, fluxes, and concentrations:
+
+* **Volumes and fluxes**. We use values from the MODFLOW calibration simulation
+for WY2018 (10/2017 through 09/2018).
+* **Precipitation concentration.** We use the median concentration across all
+measurements (2014-2019).
+* **Starting and ending lake concentrations.** We used the median value in
+Sept/Oct 2018 for the starting lake concentration and the median value in
+Sept/Oct 2019 as the ending lake concentration.
+* **Groundwater outflow concentration.** We use the median lake concentration
+across all measurements (05/2018-11/2019).
+
+<br>
+
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=6}
+param   <- "MAGNESIUM TOTAL RECOVERABLE"
+lakes   <- c("Pleasant", "Long", "Plainfield")
+
+C_pcpn  <- get_C_pcpn(param, lakes = lakes)
+C_GWout <- get_C_lake(param,
+                      summary_type = "median",
+                      value_name = "C_GWout")
+
+C1_lake <- get_C_lake(param, 
+                      start_date = as_datetime("2018-09-01"),
+                      end_date = as_datetime("2018-10-31"),
+                      summary_type = "median",
+                      value_name = "C1_lake")
+C2_lake <- get_C_lake(param, 
+                      start_date = as_datetime("2019-09-01"),
+                      end_date = as_datetime("2019-10-31"),
+                      summary_type = "median",
+                      value_name = "C2_lake")
+C_vals  <- left_join(C_pcpn, C1_lake, by = "lake") %>%
+           left_join(C2_lake, by = "lake") %>%
+           left_join(C_GWout, by = "lake")
+C_GWin  <- calculate_C_GWin(C_vals)
+
+datatable(C_GWin)
+```
+
+<br>
+
+## 2. Evaluate lake concentrations with and without pumping
+
+Now, we solve for C_lake during the "no irrigation" and "current irrigation"
+scenarios, making the following assumptions:
+
+* **Initial lake concentration:** median across all measurements (same as
+C_GWout in table above)
+* **Precipitation concentration:** median across all measurements (same as C_P
+in table above)
+* **Groundwater inflow concentration:** as calculated in previous step (same as
+C_GWin in table above).
+
+We calculate lake concentration on a daily time step, with monthly MODFLOW
+fluxes (P, GWin, GWout) converted to daily values, and lake volumes linearly
+interpolated across months. Using a daily time step (as opposed to a monthly or
+annual time step) is particularly helpful at Long Lake, where instabilities
+(e.g. negative lake concentrations) can result if a time step is too large
+compared to the (often very short) lake water residence time.
+
+<br>
+
+### Lake Mg time series
+**Important Note** the y-axis is limited to Mg = 40 mg/L, but values at Long Lake can peak to ~165 mg/L.
+
+<br>
+
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=6}
+C_vals <- C_GWin %>%
+          select(lake = .data$lake,
+                 C_pcpn = .data$C_pcpn,
+                 C0_lake = .data$C_GWout,
+                 C_GWin = .data$C_GWin)
+C_lake1 <- calculate_C_lake(C_vals,
+                            scenario = "no_irr",
+                            sim = 1,
+                            dt = "day")
+C_lake2 <- calculate_C_lake(C_vals,
+                            scenario = "cur_irr",
+                            sim = 1,
+                            dt = "day")
+C_lake <- rbind(C_lake1, C_lake2)
+
+C_lake$scenario <- factor(C_lake$scenario, 
+                          levels = c("cal", "cur_irr", "no_irr"))
+C_lake$lake <- factor(C_lake$lake, levels = lakes)
+C_lake      <- C_lake %>%
+               mutate_at("date", as.character) %>%
+               mutate_at(c("vol_m3", "P_m3", "M_P", "GWin_m3", "M_GWin", "GWout_m3", 
+                           "M_GWout", "M_lake"), round)
+C_lake$C_lake  <- round(C_lake$C_lake, 2)
+
+# Plot -------------------------------------------------------------------------
+ggplot() +
+  geom_line(data = C_lake,
+            aes(x = as_datetime(.data$date),
+                y = .data$C_lake,
+                color = .data$scenario)) +
+  scale_x_datetime(breaks = seq(as_datetime("1986-01-01"),
+                                as_datetime("2021-01-01"),
+                                "5 years"),
+                   minor_breaks = "1 year",
+                   labels = as.character(seq(0, 35, 5))) +
+  scale_y_continuous(limits = c(0,40),
+                     expand = c(0,0)) +
+  scale_color_manual(name = "Scenario",
+                     values = c("steelblue4", "goldenrod1"),
+                     breaks = c("no_irr", "cur_irr"),
+                     labels = c("No Irrigation",
+                                "Current Irrigation")) +
+  facet_wrap(~lake, ncol = 1) +
+  labs(x = "Time (yr)", y = "Magnesium (mg/L)") +
+  theme_bw() +
+  theme(text = element_text(family = "Segoe UI Semilight"),
+        legend.position = "top")
+```
+
+<br>
+
+### Lake Mg summary statistics
+
+Here, we use the same definitions of "infrequent high" and "infrequent low" as
+we do for lake levels, where "infrequent high" equates to the 10% exceedance
+probability and "infrequent low" equates to the 90% exceedance probability.
+
+<br>
+
+We are tentatively defining "significant impact" as occuring if:
+
+1. The median Mg concentration under *current irrigation* falls outside the
+range of the infrequent high to infrequent low Mg concentration under *no
+irrigation*. Under this rule, none of the lakes are significantly impacted based
+on these MODFLOW results.
+2. The maximum Mg concentration more than doubles under *current irrigation* as
+compared to under *no irrigation*. Under this rule, Long Lake is significantly
+impacted.
+
+<br>
+
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=6}
+# Summary metrics --------------------------------------------------------------
+C_lake_stats <- C_lake %>%
+          group_by(.data$lake, .data$scenario) %>%
+          summarise(median = median(.data$C_lake),
+                    q10 = quantile(.data$C_lake,
+                                          probs = (1 - 0.1),
+                                          type = 6,
+                                          na.rm = TRUE),
+                    q90 = quantile(.data$C_lake,
+                                          probs = (1 - 0.9),
+                                          type = 6,
+                                          na.rm = TRUE),
+                    min = round(min(.data$C_lake),2),
+                    max = round(max(.data$C_lake),2),
+                    .groups = "drop") %>%
+          mutate(q10 = round(as.numeric(.data$q10),2),
+                 q90 = round(as.numeric(.data$q90),2),
+                 range_10_90 = .data$q10 - .data$q90) %>%
+          select(.data$lake, .data$scenario, .data$min, .data$q90, .data$median, .data$q10, .data$max, .data$range_10_90)
+
+datatable(C_lake_stats,
+          colnames = c("Lake", "Scenario", "Minimum (mg/L)", "Infrequent Low (mg/L)", 
+                       "Median (mg/L)", "Infrequent High (mg/L)",
+                       "Maximum (mg/L)", "Range (10-90%) (mg/L)"))
+
+```
+
+<br>
+
+
+## 3. Evaluate robustness of dynamics
+
+To evaluate how sensitive these conclusions are to the volume of groundwater
+inflow and outflow estimated by MODFLOW, we test using 50% smaller and 50%
+larger groundwater inflow values. We adjust groundwater outflow to keep net
+groundwater the same.
+
+<br>
+
+We cannot be sure that the median _measured_ upgradient groundwater
+concentration matches the median upgradient groundwater concentration _actually
+entering each lake_. But to generate groundwater Mg concentrations closest to
+median measured upgradient Mg concentrations, you would need to use:
+
+* Pleasant Lake: 50% larger groundwater inflow
+* Long Lake: 50% smaller groundwater inflow
+* Plainfield Lake: 50% larger groundwater inflow
+
+<br>
+
+Big-picture solute dynamics are not meaningfully changed by scaling groundwater
+flux magnitudes up or down, nor are the conclusions from our quantitative
+ecological rules (yay!). I believe we can conclude that given a) the lake level
+time series calculated by MODFLOW and b) the assumptions about starting and
+ending lake concentrations in WY2018, our approach is robust to uncertainties in
+flux magnitude or upgradient groundwater concentrations.
+
+<br>
+
+### Resulting groundwater concentrations
+
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=6}
+MODFLOW_smaller <- CSLSdata::MODFLOW %>%
+                   mutate(GWout_m3 = .data$GWout_m3 - abs(.data$GWin_m3/2),
+                          GWin_m3 = .data$GWin_m3/2)
+
+MODFLOW_larger <- CSLSdata::MODFLOW %>%
+                   mutate(GWout_m3 = .data$GWout_m3 + abs(.data$GWin_m3/2),
+                          GWin_m3 = 1.5*.data$GWin_m3)
+
+C_pcpn  <- get_C_pcpn(param, lakes = lakes)
+C_GWout <- get_C_lake(param,
+                      summary_type = "median",
+                      value_name = "C_GWout")
+
+C1_lake <- get_C_lake(param, 
+                      start_date = as_datetime("2018-09-01"),
+                      end_date = as_datetime("2018-10-31"),
+                      summary_type = "median",
+                      value_name = "C1_lake")
+C2_lake <- get_C_lake(param, 
+                      start_date = as_datetime("2019-09-01"),
+                      end_date = as_datetime("2019-10-31"),
+                      summary_type = "median",
+                      value_name = "C2_lake")
+C_vals  <- left_join(C_pcpn, C1_lake, by = "lake") %>%
+           left_join(C2_lake, by = "lake") %>%
+           left_join(C_GWout, by = "lake")
+
+
+C_GWin_smaller <- calculate_C_GWin(C_vals, fluxes = MODFLOW_smaller) %>%
+                  mutate(type = "50% Smaller GW Flux")
+C_GWin_larger  <- calculate_C_GWin(C_vals, fluxes = MODFLOW_larger) %>%
+                  mutate(type = "50% Larger GW Flux")
+C_GWin$type    <- "MODFLOW GW Flux"
+C_GWin_new <- rbind(C_GWin, C_GWin_smaller) %>%
+              rbind(C_GWin_larger)
+
+datatable(C_GWin_new)
+```
+
+<br>
+
+### Dynamics with 50% smaller groundwater fluxes
+**Important Note** the y-axis is limited to Mg = 50 mg/L, but values at Long Lake can peak to ~250 mg/L.
+
+<br>
+
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=6}
+# Smaller 
+C_vals <- C_GWin_smaller %>%
+          select(lake = .data$lake,
+                 C_pcpn = .data$C_pcpn,
+                 C0_lake = .data$C_GWout,
+                 C_GWin = .data$C_GWin)
+C_lake1 <- calculate_C_lake(C_vals,
+                            scenario = "no_irr",
+                            sim = 1,
+                            dt = "day",
+                            fluxes = MODFLOW_smaller)
+C_lake2 <- calculate_C_lake(C_vals,
+                            scenario = "cur_irr",
+                            sim = 1,
+                            dt = "day",
+                            fluxes = MODFLOW_smaller)
+C_lake <- rbind(C_lake1, C_lake2)
+
+C_lake$scenario <- factor(C_lake$scenario, 
+                          levels = c("cal", "cur_irr", "no_irr"))
+C_lake$lake <- factor(C_lake$lake, levels = lakes)
+C_lake      <- C_lake %>%
+               mutate_at("date", as.character) %>%
+               mutate_at(c("vol_m3", "P_m3", "M_P", "GWin_m3", "M_GWin", "GWout_m3", 
+                           "M_GWout", "M_lake"), round)
+C_lake$C_lake  <- round(C_lake$C_lake, 2)
+
+# Plot -------------------------------------------------------------------------
+ggplot() +
+  geom_line(data = C_lake,
+            aes(x = as_datetime(.data$date),
+                y = .data$C_lake,
+                color = .data$scenario)) +
+  scale_x_datetime(breaks = seq(as_datetime("1986-01-01"),
+                                as_datetime("2021-01-01"),
+                                "5 years"),
+                   minor_breaks = "1 year",
+                   labels = as.character(seq(0, 35, 5))) +
+  scale_y_continuous(limits = c(0,50),
+                     expand = c(0,0)) +
+  scale_color_manual(name = "Scenario",
+                     values = c("steelblue4", "goldenrod1"),
+                     breaks = c("no_irr", "cur_irr"),
+                     labels = c("No Irrigation",
+                                "Current Irrigation")) +
+  facet_wrap(~lake, ncol = 1) +
+  labs(x = "", y = "Magnesium (mg/L)") +
+  theme_bw() +
+  theme(text = element_text(family = "Segoe UI Semilight"),
+        legend.position = "top")
+
+C_lake_sm <- C_lake %>%
+          group_by(.data$lake, .data$scenario) %>%
+          summarise(median = median(.data$C_lake),
+                    q10 = quantile(.data$C_lake,
+                                          probs = (1 - 0.1),
+                                          type = 6,
+                                          na.rm = TRUE),
+                    q90 = quantile(.data$C_lake,
+                                          probs = (1 - 0.9),
+                                          type = 6,
+                                          na.rm = TRUE),
+                    min = round(min(.data$C_lake),2),
+                    max = round(max(.data$C_lake),2),
+                    .groups = "drop") %>%
+          mutate(q10 = round(as.numeric(.data$q10),2),
+                 q90 = round(as.numeric(.data$q90),2),
+                 range_10_90 = .data$q10 - .data$q90) %>%
+          select(.data$lake, .data$scenario, .data$min, .data$q90, .data$median, .data$q10, .data$max, .data$range_10_90)
+
+```
+<br>
+
+
+### Dynamics with 50% larger groundwater fluxes
+**Important Note** the y-axis is limited to Mg = 40 mg/L, but values at Long Lake can peak to ~135 mg/L.
+
+<br>
+
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=6}
+# Larger 
+C_vals <- C_GWin_larger %>%
+          select(lake = .data$lake,
+                 C_pcpn = .data$C_pcpn,
+                 C0_lake = .data$C_GWout,
+                 C_GWin = .data$C_GWin)
+C_lake1 <- calculate_C_lake(C_vals,
+                            scenario = "no_irr",
+                            sim = 1,
+                            dt = "day",
+                            fluxes = MODFLOW_larger)
+C_lake2 <- calculate_C_lake(C_vals,
+                            scenario = "cur_irr",
+                            sim = 1,
+                            dt = "day",
+                            fluxes = MODFLOW_larger)
+C_lake <- rbind(C_lake1, C_lake2)
+
+C_lake$scenario <- factor(C_lake$scenario, 
+                          levels = c("cal", "cur_irr", "no_irr"))
+C_lake$lake <- factor(C_lake$lake, levels = lakes)
+C_lake      <- C_lake %>%
+               mutate_at("date", as.character) %>%
+               mutate_at(c("vol_m3", "P_m3", "M_P", "GWin_m3", "M_GWin", "GWout_m3", 
+                           "M_GWout", "M_lake"), round)
+C_lake$C_lake  <- round(C_lake$C_lake, 2)
+
+# Plot -------------------------------------------------------------------------
+ggplot() +
+  geom_line(data = C_lake,
+            aes(x = as_datetime(.data$date),
+                y = .data$C_lake,
+                color = .data$scenario)) +
+  scale_x_datetime(breaks = seq(as_datetime("1986-01-01"),
+                                as_datetime("2021-01-01"),
+                                "5 years"),
+                   minor_breaks = "1 year",
+                   labels = as.character(seq(0, 35, 5)))  +
+  scale_y_continuous(limits = c(0,40),
+                     expand = c(0,0)) +
+  scale_color_manual(name = "Scenario",
+                     values = c("steelblue4", "goldenrod1"),
+                     breaks = c("no_irr", "cur_irr"),
+                     labels = c("No Irrigation",
+                                "Current Irrigation")) +
+  facet_wrap(~lake, ncol = 1) +
+  labs(x = "", y = "Magnesium (mg/L)") +
+  theme_bw() +
+  theme(text = element_text(family = "Segoe UI Semilight"),
+        legend.position = "top")
+
+C_lake_lg <- C_lake %>%
+          group_by(.data$lake, .data$scenario) %>%
+          summarise(median = median(.data$C_lake),
+                    q10 = quantile(.data$C_lake,
+                                          probs = (1 - 0.1),
+                                          type = 6,
+                                          na.rm = TRUE),
+                    q90 = quantile(.data$C_lake,
+                                          probs = (1 - 0.9),
+                                          type = 6,
+                                          na.rm = TRUE),
+                    min = round(min(.data$C_lake),2),
+                    max = round(max(.data$C_lake),2),
+                    .groups = "drop") %>%
+          mutate(q10 = round(as.numeric(.data$q10),2),
+                 q90 = round(as.numeric(.data$q90),2),
+                 range_10_90 = .data$q10 - .data$q90) %>%
+          select(.data$lake, .data$scenario, .data$min, .data$q90, .data$median, .data$q10, .data$max, .data$range_10_90)
+
+```
+
+<br>
+
+### Comparison summary statistics
+
+Does the median Mg concentration under *current irrigation* falls outside the
+range of the infrequent high to infrequent low Mg concentration under *no
+irrigation*? **No.** Under this rule, none of the lakes are significantly
+impacted under normal, 50% higher, or 50% lower MODFLOW groundwater fluxes.
+
+<br>
+
+Does the maximum Mg concentration more than double under *current irrigation* as
+compared to under *no irrigation*? **Yes, at Long Lake.** Under this rule,
+Pleasant and Plainfield are not significantly impacted under normal, 50% higher,
+or 50% lower MODFLOW groundwater fluxes, but Long Lake is under all three
+scenarios.
+
+<br>
+
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=6}
+C_lake_sm$type    <- "50% Smaller GW Flux"
+C_lake_lg$type    <- "50% Larger GW Flux"
+C_lake_stats$type <- "MODFLOW GW Flux"
+C_lake_all_stats <- rbind(C_lake_stats, C_lake_sm) %>%
+                    rbind(C_lake_lg)
+
+C_lake_all_stats$median      <- round(C_lake_all_stats$median, 2)
+C_lake_all_stats$range_10_90 <- round(C_lake_all_stats$range_10_90, 2)
+
+datatable(C_lake_all_stats,
+          colnames = c("Lake", "Scenario", "Minimum (mg/L)", "Infrequent Low (mg/L)", 
+                       "Median (mg/L)", "Infrequent High (mg/L)",
+                       "Maximum (mg/L)", "Range (10-90%) (mg/L)",
+                       "Type"))
+
+```
+
+<br>
+
+## 4. Identify thresholds
+
+This is a bonus section, created to try to explore some of the reasons for the
+observations above. Long Lake evapoconcentration is clearly tied to lake level
+(it spikes below a clearly defined level). The drivers behind Plainfield
+dynamics are not immediately obvious.
+
+<br>
+
+### Lake level vs. Lake Mg
+
+**Important Note** the x-axis is limited to Mg = 40 mg/L, but values at Long Lake can peak to ~165 mg/L.
+
+<br>
+
+**Threshold elevation noted here:** the elevation at which lake concentration
+begins to exceed the upgradient groundwater concentration. This only occurs at
+Long (not Pleasant or Plainfield).
+
+<br>
+
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=4}
+C_vals <- C_GWin %>%
+          select(lake = .data$lake,
+                 C_pcpn = .data$C_pcpn,
+                 C0_lake = .data$C_GWout,
+                 C_GWin = .data$C_GWin)
+C_lake1 <- calculate_C_lake(C_vals,
+                            scenario = "no_irr",
+                            sim = 1,
+                            dt = "day")
+C_lake2 <- calculate_C_lake(C_vals,
+                            scenario = "cur_irr",
+                            sim = 1,
+                            dt = "day")
+
+C_lake1$lake <- factor(C_lake1$lake, levels = lakes)
+C_lake2$lake <- factor(C_lake2$lake, levels = lakes)
+
+yintercept <- C_lake2 %>% 
+              filter(.data$C_lake >= .data$C_GWin) %>%
+              group_by(.data$lake) %>%
+              summarise(level_m = max(.data$level_m)) %>%
+              select(.data$lake, .data$level_m) %>%
+              unique()
+yintercept$lake <- factor(yintercept$lake, levels = lakes)
+
+ggplot() +
+  geom_point(data = C_lake2,
+             aes(x = .data$C_lake,
+                 y = NISTmeterTOft(.data$level_m),
+                 color = "cur_irr",
+                 shape = "cur_irr"),
+             size = 1) +
+  geom_point(data = C_lake1,
+             aes(x = .data$C_lake,
+                 y = NISTmeterTOft(.data$level_m),
+                 color = "no_irr",
+                 shape = "no_irr"),
+             size = 1) +
+  geom_hline(data = yintercept, 
+             aes(yintercept = NISTmeterTOft(.data$level_m)),
+             linetype = "dashed") +
+  geom_text(data = yintercept, 
+             aes(x = 30,
+                 y = NISTmeterTOft(.data$level_m) + 0.5,
+                 label = sprintf("%.1f ft", NISTmeterTOft(.data$level_m))),
+            family = "Segoe UI Semilight",
+            size = 3) +
+  scale_x_continuous(limits = c(0,40)) +
+  scale_color_manual(name = "Scenario",
+                     values = c("steelblue4", "goldenrod1"),
+                     breaks = c("no_irr", "cur_irr"),
+                     labels = c("No Irrigation",
+                                "Current Irrigation")) +
+  scale_shape_manual(name = "Scenario",
+                     values = c(16, 17),
+                     breaks = c("no_irr", "cur_irr"),
+                     labels = c("No Irrigation",
+                                "Current Irrigation")) +
+  facet_wrap(~lake, ncol = 3, scales = "free") +
+  labs(x = "Magnesium (mg/L)", y = "Lake Level (ft)") +
+  theme_bw() +
+  theme(text = element_text(family = "Segoe UI Semilight"),
+        legend.position = "top")
+
+```
+
+<br>
+
+### Investigate Plainfield more closely
+
+Plainfield Lake patterns are a little more difficult to uncover. Here we try
+looking at the difference between "No Irrigation" and "Current Irrigation" Mg
+values plotted vs. both "No Irrigation" and "Current Irrigation" lake levels to
+see if it helps unearth patterns. Patterns remain elusive to me.
+
+<br>
+
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=4}
+C_lake <- left_join(C_lake1, C_lake2, 
+                    by = c("lake", "date")) %>%
+          mutate(diff = .data$C_lake.y - .data$C_lake.x,
+                 water_year = ifelse(month(.data$date) >= 10,
+                                     year(.data$date) + 1,
+                                     year(.data$date))) %>%
+          select(.data$lake, .data$date, .data$level_m.x, 
+                 .data$level_m.y, .data$water_year,
+                 .data$C_lake.x, .data$C_lake.y, .data$diff,
+                 .data$vol_m3.x, .data$vol_m3.y)
+
+ggplot() +
+  geom_point(data = C_lake,
+             aes(x = .data$diff,
+                 y = NISTmeterTOft(.data$level_m.x)),
+             size = 1) +
+  facet_wrap(~lake, ncol = 3, scales = "free") +
+  labs(x = "Magnesium Difference (mg/L)", y = "No Irrigation Lake Level (ft)") +
+  theme_bw() +
+  theme(text = element_text(family = "Segoe UI Semilight"))
+
+```
+
+<br>
+
+
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=4}
+ggplot() +
+  geom_point(data = C_lake,
+             aes(x = .data$diff,
+                 y = NISTmeterTOft(.data$level_m.y)),
+             size = 1) +
+  facet_wrap(~lake, ncol = 3, scales = "free") +
+  labs(x = "Magnesium Difference (mg/L)", y = "Current Irrigation Lake Level (ft)") +
+  theme_bw() +
+  theme(text = element_text(family = "Segoe UI Semilight"))
+```
+
+<br>
+
+Just in case something is clearer by looking at the timeseries, here's
+Plainfield lake levels and differences. No surprise, still kind of messy. You're
+more likely to see evapoconcentrating effects at the lower lake levels (positive
+Mg difference aka current irrigation Mg is higher), but there are unexplained dips
+to loss of source (negative Mg difference aka current irrigation Mg is lower)
+throughout that period as well.
+
+<br>
+
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=4}
+C_lake$level_ft.y <- NISTmeterTOft(C_lake$level_m.y)
+C_lake$level_ft.x <- NISTmeterTOft(C_lake$level_m.x)
+ggplot(filter(C_lake, .data$lake == "Plainfield")) +
+  geom_line(aes(x = .data$date,
+                 y = .data$diff,
+                color = "Mg Difference"),
+            size = 1) +
+  geom_line(aes(x = .data$date,
+                 y = (.data$level_ft.y-1096),
+                color = "Cur. Irr. Lake Level")) +
+  geom_line(aes(x = .data$date,
+                 y = (.data$level_ft.x-1096),
+                color = "No Irr. Lake Level")) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  # facet_wrap(~lake, ncol = 1, scales = "free") +
+  scale_y_continuous(sec.axis = sec_axis(~.+1096,
+                     name = "Current Irrigation Lake Level (ft)")) +
+  labs(x = "", y = "Magnesium Difference (mg/L)", color = "") +
+  theme_bw() +
+  theme(text = element_text(family = "Segoe UI Semilight"),
+        legend.position = "top")
+```
+
+<br>
+<br>
+
+Is there instead a relationship between the Mg difference and Precipitation
+minus Evaporation at Plainfield? Also difficult to say, no matter whether you
+break it down by water year or by season.
+
+<br>
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=3.5}
+MODFLOW_PE <- CSLSdata::MODFLOW %>%
+              filter(!is.na(.data$GWin_m3),
+                     .data$scenario != "cal",
+                     .data$sim == 1) %>%
+              mutate(month = month(.data$date),
+                     year = year(.data$date),
+                     water_year = ifelse(.data$month >= 10,
+                                         .data$year + 1,
+                                         .data$year),
+                     water_year_date = as_datetime(sprintf("%d-04-01",
+                                                           .data$water_year)),
+                     PE_m3 = abs(.data$P_m3)-abs(.data$E_m3)) %>%
+              group_by(lake = .data$lake, 
+                       date = .data$water_year_date) %>%
+              summarise(PE_m3 = sum(.data$PE_m3),
+                        .groups = "drop")
+
+ggplot() +
+  geom_col(data = filter(MODFLOW_PE, .data$lake == "Plainfield"),
+            aes(x = .data$date,
+                y = NISTcubMeterTOacreFt(.data$PE_m3)/50),
+           color = "skyblue",
+           fill = "skyblue",
+           alpha = 0.4)  +
+  geom_line(data = filter(C_lake, .data$lake == "Plainfield"),
+             aes(x = .data$date,
+                 y = .data$diff)) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  scale_y_continuous(sec.axis = sec_axis(~.*50, name = "P - E (ac-ft)")) +
+  # facet_wrap(~lake, ncol = 1, scales = "free") +
+  labs(x = "", y = "Magnesium Difference (mg/L)") +
+  theme_bw() +
+  theme(text = element_text(family = "Segoe UI Semilight"),
+        legend.position = "top")
+
+
+```
+<br>
+
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=3.5}
+MODFLOW_PE <- CSLSdata::MODFLOW %>%
+              filter(!is.na(.data$GWin_m3),
+                     .data$scenario != "cal",
+                     .data$sim == 1) %>%
+              mutate(month = month(.data$date),
+                     year = year(.data$date),
+                     water_year = ifelse(.data$month >= 10,
+                                         .data$year + 1,
+                                         .data$year),
+                     season_year = ifelse(.data$month == 12,
+                                          .data$year + 1,
+                                          .data$year),
+                     season_month = ifelse(.data$month %in% c(12,1,2),
+                                     1, ifelse(.data$month %in% c(3,4,5),
+                                                      4, ifelse(.data$month %in% c(6,7,8),
+                                                                       7, 10))),
+                     season_date = as_datetime(sprintf("%d-%d-01", .data$season_year, 
+                                           .data$season_month)),
+                     PE_m3 = abs(.data$P_m3)-abs(.data$E_m3)) %>%
+              group_by(lake = .data$lake, 
+                       date = .data$season_date,
+                       season_month = .data$season_month) %>%
+              summarise(PE_m3 = sum(.data$PE_m3),
+                        .groups = "drop")
+
+ggplot() +
+  geom_col(data = filter(MODFLOW_PE, .data$lake == "Plainfield"),
+            aes(x = .data$date,
+                y = NISTcubMeterTOacreFt(.data$PE_m3)/10,
+                fill = as.factor(.data$season_month)),
+           color = NA,
+           alpha = 0.5)  +
+  geom_line(data = filter(C_lake, .data$lake == "Plainfield"),
+             aes(x = .data$date,
+                 y = .data$diff)) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  scale_y_continuous(sec.axis = sec_axis(~.*10, name = "P - E (ac-ft)")) +
+  # scale_color_brewer(name = "Season",
+  #                    labels = c("Winter", "Spring", "Summer", "Fall"),
+  #                    palette = "Dark2") +
+  scale_fill_brewer(name = "Season",
+                     labels = c("Winter", "Spring", "Summer", "Fall"),
+                     palette = "Dark2") +
+  # facet_wrap(~lake, ncol = 1, scales = "free") +
+  labs(x = "", y = "Magnesium Difference (mg/L)") +
+  theme_bw() +
+  theme(text = element_text(family = "Segoe UI Semilight"),
+        legend.position = "top")
+
+
+```

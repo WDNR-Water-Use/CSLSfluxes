@@ -1,0 +1,542 @@
+---
+title: "CSLS_water_budget"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+vignette: >
+  %\VignetteIndexEntry{CSLS_water_budget}
+  %\VignetteEngine{knitr::rmarkdown}
+  \usepackage[utf8]{inputenc}
+---
+
+```{r setup, echo=FALSE, warning=FALSE, message=FALSE}
+library(CSLSfluxes)
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(reshape2)
+library(extrafont)
+library(NISTunits)
+library(stringr)
+library(purrr)
+
+scenarios <- data.frame(scenario = c("no_irr", "cur_irr", "fut_irr"),
+                        scenario_name = c("No Irrigation", 
+                                          "Current Irrigation",
+                                          "Future Irrigation"),
+                        colors = c("steelblue4", "goldenrod1", "darkorange"))
+
+MODFLOW <- CSLSdata::MODFLOW %>%
+           mutate(GWin_m3 = -.data$GWin_m3,
+                  E_m3 = -.data$E_m3,
+                  dV_m3 = -.data$dV_m3,
+                  dlevel_m = .data$level_m - lag(.data$level_m)) %>%
+           filter(!is.na(.data$GWin_m3),
+                  .data$sim %in% c(1),
+                  year(.data$date) >= 1986,
+                  .data$scenario %in% scenarios$scenario) %>%
+           select(.data$scenario, .data$lake, .data$date, .data$level_m, .data$P_m3, 
+                  .data$E_m3, .data$GWin_m3, .data$GWout_m3, .data$dV_m3,
+                  .data$dlevel_m)
+
+MODFLOW$scenario <- factor(MODFLOW$scenario,
+                           levels = scenarios$scenario,
+                           labels = scenarios$scenario_name)
+
+```
+
+## Display irrigation scenario water budget
+
+```{r echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=6}
+add_vol <- NULL
+for (lake in c("Pleasant", "Long", "Plainfield")) {
+  this_lake         <- filter(MODFLOW, .data$lake == !!lake)
+  this_bathy        <- filter(CSLSdata::bathymetry, .data$lake == !!lake)
+  fn_elev_vol       <- approxfun(this_bathy$elev_m, this_bathy$vol_m3)
+  this_lake$vol_m3  <- fn_elev_vol(this_lake$level_m)
+  fn_elev_area      <- approxfun(this_bathy$elev_m, this_bathy$area_m2)
+  this_lake$area_m2 <- fn_elev_area(this_lake$level_m)
+  add_vol <- rbind(add_vol, this_lake)
+}
+
+P_in      <- add_vol  %>%
+            filter(.data$scenario == "No Irrigation") %>%
+            mutate(area_m2 = ifelse(is.na(.data$area_m2),
+                                    0, .data$area_m2),
+                   P_m = .data$P_m3/.data$area_m2,
+                   P_in = NISTmeterTOinch(.data$P_m)) %>%
+            select(.data$date, .data$lake, .data$P_in)
+
+P_long   <- P_in %>%
+            filter(.data$lake == "Plainfield") %>%
+            mutate(lake = "Long")
+
+P_in     <- P_in %>%
+            filter(.data$lake != "Long") %>%
+            rbind(P_long)
+
+add_vol   <- add_vol %>%
+             left_join(P_in) %>%
+             mutate(area_m2_calc = .data$P_m3/NISTinchTOmeter(.data$P_in)) %>%
+             mutate(area_m2 = ifelse(.data$scenario == "Current Irrigation",
+                                     .data$area_m2_calc, 
+                                     ifelse(.data$lake == "Long",
+                                            .data$area_m2_calc, .data$area_m2)))
+
+inches_df <- add_vol %>%
+             mutate(area_m2 = ifelse(is.na(.data$area_m2),
+                                     0, .data$area_m2),
+                    vol_m3 = ifelse(is.na(.data$vol_m3),
+                                    0, .data$vol_m3)) %>%
+             mutate(GWin_m3 = NISTmeterTOinch(.data$GWin_m3/.data$area_m2),
+                    P_m3 = NISTmeterTOinch(.data$P_m3/.data$area_m2),
+                    E_m3 = NISTmeterTOinch(.data$E_m3/.data$area_m2),
+                    GWout_m3 = NISTmeterTOinch(.data$GWout_m3/.data$area_m2),
+                    dV_m3 = NISTmeterTOinch(.data$dV_m3/.data$area_m2),
+                    vol_m3 = NISTmeterTOinch(.data$vol_m3/.data$area_m2),
+                    dlevel_m = NISTmeterTOinch(.data$dlevel_m),
+                    level_m = NISTmeterTOft(.data$level_m)) %>%
+             group_by(date = year(.data$date), 
+                      lake = .data$lake,
+                      scenario = .data$scenario) %>%
+             summarise(GWin = sum(.data$GWin_m3, na.rm = TRUE),
+                       P = sum(.data$P_m3, na.rm = TRUE),
+                       E = sum(.data$E_m3, na.rm = TRUE),
+                       GWout = sum(.data$GWout_m3, na.rm = TRUE),
+                       dV = sum(.data$dV_m3, na.rm = TRUE),
+                       vol = mean(.data$vol_m3, na.rm = TRUE),
+                       level = mean(.data$level_m, na.rm = TRUE),
+                       dlevel = sum(.data$dlevel_m, na.rm = TRUE),
+                       .groups = "drop") %>%
+             mutate(GWnet = .data$GWout - .data$GWin,
+                    P_E = .data$P - .data$E) %>%
+             select(.data$scenario, .data$date, .data$lake, .data$GWin, .data$P, 
+                    .data$E, .data$GWout, .data$dV, .data$vol, .data$level,
+                    .data$dlevel, .data$GWnet, .data$P_E)
+acft_df   <- add_vol %>%
+             mutate(GWin_m3 = NISTcubMeterTOacreFt(.data$GWin_m3),
+                    P_m3 = NISTcubMeterTOacreFt(.data$P_m3),
+                    E_m3 = NISTcubMeterTOacreFt(.data$E_m3),
+                    GWout_m3 = NISTcubMeterTOacreFt(.data$GWout_m3),
+                    dV_m3 = NISTcubMeterTOacreFt(.data$dV_m3),
+                    vol_m3 = NISTcubMeterTOacreFt(.data$vol_m3)) %>%
+             group_by(date = year(.data$date), 
+                      lake = .data$lake,
+                      scenario = .data$scenario) %>%
+             summarise(GWin = sum(.data$GWin_m3, na.rm = TRUE),
+                       P = sum(.data$P_m3, na.rm = TRUE),
+                       E = sum(.data$E_m3, na.rm = TRUE),
+                       GWout = sum(.data$GWout_m3, na.rm = TRUE),
+                       dV = sum(.data$dV_m3, na.rm = TRUE),
+                       vol = mean(.data$vol_m3, na.rm = TRUE),
+                       .groups = "drop") %>%
+             select(.data$scenario, .data$date, .data$lake, .data$GWin, .data$P, 
+                    .data$E, .data$GWout, .data$dV, .data$vol)
+pcnt_df <- add_vol %>%
+           group_by(date = year(.data$date), lake = .data$lake, 
+                    scenario = .data$scenario) %>%
+           summarise(GWin_m3 = sum(.data$GWin_m3, na.rm = TRUE),
+                     P_m3 = sum(.data$P_m3, na.rm = TRUE),
+                     E_m3 = sum(.data$E_m3, na.rm = TRUE),
+                     GWout_m3 = sum(.data$GWout_m3, na.rm = TRUE),
+                     dV_m3 = sum(.data$dV_m3, na.rm = TRUE),
+                     inflow = ifelse(.data$dV_m3 < 0,
+                                     -.data$dV_m3 + .data$GWin_m3 + .data$P_m3,
+                                     .data$GWin_m3 + .data$P_m3),
+                     outflow = ifelse(.data$dV_m3 > 0,
+                                     .data$dV_m3 + .data$GWout_m3 + .data$E_m3,
+                                     .data$GWout_m3 + .data$E_m3),
+                     .groups = "drop") %>%
+           mutate(GWin = 100*.data$GWin_m3/.data$inflow,
+                     P = 100*.data$P_m3/.data$inflow,
+                     E = 100*.data$E_m3/.data$outflow,
+                     GWout = 100*.data$GWout_m3/.data$outflow,
+                     dV = ifelse(.data$dV_m3 < 0,
+                                 100*.data$dV_m3/.data$inflow,
+                                 100*.data$dV_m3/.data$outflow))
+
+lakes <- c("Pleasant", "Long", "Plainfield")
+
+plot_budget <- function(plot_df, lake, direction, ylabel,
+                        fill = list(breaks = c("GWin","GWout","P","E","dV"),
+                                    labels = c("GW Inflow",
+                                               "GW Outflow",
+                                               "Precipitation",
+                                               "Evaporation",
+                                               expression(paste(Delta," Lake Volume"))),
+                                    values = c("#33A02C",
+                                               "#B2DF8A",
+                                               "#1F78B4",
+                                               "#A6CEE3",
+                                               "#FB9A99"))) {
+  plot_df$variable = factor(as.character(plot_df$variable),
+                          levels = rev(c("GWin","GWout","P","E","dV")))
+  
+  plot_obj <- ggplot(data = filter(plot_df, 
+                                   .data$direction == !!direction & 
+                                     .data$lake == !!lake),
+                     aes(x = .data$date,
+                         y = .data$value,
+                         fill = .data$variable)) +
+    geom_area(alpha = 0.6) +
+    facet_wrap(~scenario, ncol = 1) +
+    scale_x_continuous(breaks = seq(1986,2018,1),
+                       minor_breaks = seq(1986,2018,1),
+                       labels = as.character(seq(1, 33,1)),
+                       expand = c(0,0)) +
+    scale_y_continuous(expand = c(0,0),
+                       breaks = seq(0,100,20),
+                       minor_breaks = seq(0,100,10)) +
+    scale_fill_manual(name = "",
+                      breaks = fill$breaks,
+                      labels = fill$labels,
+                      values = fill$values) +
+    labs(x = "Year",
+         y = ylabel,
+         title = sprintf("%s Lake", lake)) +
+    theme_bw() +
+    theme(text = element_text(family = "Segoe UI Semilight",
+                              size = 10),
+          plot.title = element_text(hjust = 0.5),
+          legend.text.align = 0,
+          legend.position = "top") 
+  
+  return(plot_obj)
+}
+
+table_inches <- inches_df %>%
+                mutate(res_time = .data$vol/(.data$GWin+.data$P),
+                       dV = -.data$dV) %>%
+                select(.data$lake, .data$scenario, .data$P, .data$GWin, 
+                       .data$E, .data$GWout, .data$dV, .data$res_time) %>%
+                melt(id.vars = c("lake", "scenario")) %>%
+                group_by(.data$lake, .data$scenario, .data$variable) %>%
+                summarise(min = round(min(.data$value),1),
+                          median = round(median(.data$value),1),
+                          max = round(max(.data$value),1),
+                          .groups = "drop") %>%
+                arrange(.data$lake, .data$variable, .data$scenario)
+
+table_acft  <- acft_df %>%
+                mutate(res_time = .data$vol/(.data$GWin+.data$P),
+                       dV = -.data$dV) %>%
+                select(.data$lake, .data$scenario, .data$P, .data$GWin, 
+                       .data$E, .data$GWout, .data$dV, .data$res_time) %>%
+                melt(id.vars = c("lake", "scenario")) %>%
+                group_by(.data$lake, .data$scenario, .data$variable) %>%
+                summarise(min = round(min(.data$value),1),
+                          median = round(median(.data$value),1),
+                          max = round(max(.data$value),1),
+                          .groups = "drop") %>%
+                arrange(.data$lake, .data$variable, .data$scenario)
+
+table_pcnt   <- pcnt_df %>%
+                select(.data$lake, .data$scenario, .data$P, .data$GWin, 
+                       .data$E, .data$GWout, .data$dV) %>%
+                melt(id.vars = c("lake", "scenario")) %>%
+                group_by(.data$lake, .data$scenario, .data$variable) %>%
+                summarise(min = round(min(.data$value),1),
+                          median = round(median(.data$value),1),
+                          max = round(max(.data$value),1),
+                          .groups = "drop") %>%
+                arrange(.data$lake, .data$variable, .data$scenario)                
+
+```
+
+### Budget as %
+
+<br>
+
+**Inflows**
+
+```{r echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=4}
+## Copy scenario adjustments to other chunks
+plot_df <- pcnt_df %>%
+           select(.data$scenario, .data$date, .data$lake, .data$GWin, .data$P, 
+                     .data$E, .data$GWout, .data$dV) %>%
+           melt(id.vars = c("date", "lake", "scenario")) %>%
+           mutate(direction = ifelse(.data$variable %in% c("GWin", "P"),
+                                     "In", 
+                                     ifelse(.data$variable %in% 
+                                              c("GWout", "E"),
+                                            "Out",
+                                            ifelse(.data$value < 0,
+                                                   "In", "Out"))),
+                  value = abs(.data$value)) %>%
+           mutate(value = ifelse(.data$variable == "dV" & 
+                                   .data$direction == "Out",
+                                 0, .data$value),
+                  direction = ifelse(.data$variable == "dV" & 
+                                   .data$direction == "Out" &
+                                   .data$value == 0,
+                                 "In", .data$direction))
+
+plot_budget(plot_df, "Pleasant", "In", "Flux (%)")
+plot_budget(plot_df, "Long", "In", "Flux (%)")
+plot_budget(plot_df, "Plainfield", "In", "Flux (%)")
+
+```
+
+<br>
+
+**Outflows**
+
+```{r echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=4}
+plot_df <- pcnt_df %>%
+           select(.data$scenario, .data$date, .data$lake, .data$GWin, .data$P, 
+                     .data$E, .data$GWout, .data$dV) %>%
+           melt(id.vars = c("date", "lake", "scenario")) %>%
+           mutate(direction = ifelse(.data$variable %in% c("GWin", "P"),
+                                     "In", 
+                                     ifelse(.data$variable %in% 
+                                              c("GWout", "E"),
+                                            "Out",
+                                            ifelse(.data$value < 0,
+                                                   "In", "Out"))),
+                  value = abs(.data$value)) %>%
+           mutate(value = ifelse(.data$variable == "dV" & 
+                                   .data$direction == "In",
+                                 0, .data$value),
+                  direction = ifelse(.data$variable == "dV" & 
+                                   .data$direction == "In" &
+                                   .data$value == 0,
+                                 "Out", .data$direction))
+
+plot_budget(plot_df, "Pleasant", "Out", "Flux (%)")
+plot_budget(plot_df, "Long", "Out", "Flux (%)")
+plot_budget(plot_df, "Plainfield", "Out", "Flux (%)")
+
+```
+
+<br>
+
+### Budget as Inches
+
+**Inflows**
+
+```{r echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=4}
+plot_df <- inches_df %>%
+           select(.data$scenario, .data$date, .data$lake, .data$GWin, .data$P, 
+                     .data$E, .data$GWout, .data$dV) %>%
+           melt(id.vars = c("date", "lake", "scenario")) %>%
+           mutate(direction = ifelse(.data$variable %in% c("GWin", "P"),
+                                     "In", 
+                                     ifelse(.data$variable %in% 
+                                              c("GWout", "E"),
+                                            "Out",
+                                            ifelse(.data$value < 0,
+                                                   "In", "Out"))),
+                  value = abs(.data$value)) %>%
+           mutate(value = ifelse(.data$variable == "dV" & 
+                                   .data$direction == "Out",
+                                 0, .data$value),
+                  direction = ifelse(.data$variable == "dV" & 
+                                   .data$direction == "Out" &
+                                   .data$value == 0,
+                                 "In", .data$direction))
+
+plot_budget(plot_df, "Pleasant", "In", "Flux (inches)")
+plot_budget(plot_df, "Long", "In", "Flux (inches)")
+plot_budget(plot_df, "Plainfield", "In", "Flux (inches)")
+
+```
+
+<br>
+
+**Outflows**
+
+```{r echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=4}
+plot_df <- inches_df %>%
+           select(.data$scenario, .data$date, .data$lake, .data$GWin, .data$P, 
+                     .data$E, .data$GWout, .data$dV) %>%
+           melt(id.vars = c("date", "lake", "scenario")) %>%
+           mutate(direction = ifelse(.data$variable %in% c("GWin", "P"),
+                                     "In", 
+                                     ifelse(.data$variable %in% 
+                                              c("GWout", "E"),
+                                            "Out",
+                                            ifelse(.data$value < 0,
+                                                   "In", "Out"))),
+                  value = abs(.data$value)) %>%
+           mutate(value = ifelse(.data$variable == "dV" & 
+                                   .data$direction == "In",
+                                 0, .data$value),
+                  direction = ifelse(.data$variable == "dV" & 
+                                   .data$direction == "In" &
+                                   .data$value == 0,
+                                 "Out", .data$direction))
+
+plot_budget(plot_df, "Pleasant", "Out", "Flux (inches)")
+plot_budget(plot_df, "Long", "Out", "Flux (inches)")
+plot_budget(plot_df, "Plainfield", "Out", "Flux (inches)")
+
+```
+
+### Budget as Acre-Ft
+
+**Inflows**
+
+```{r echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=4}
+plot_df <- acft_df %>%
+           select(.data$scenario, .data$date, .data$lake, .data$GWin, .data$P, 
+                     .data$E, .data$GWout, .data$dV) %>%
+           melt(id.vars = c("date", "lake", "scenario")) %>%
+           mutate(direction = ifelse(.data$variable %in% c("GWin", "P"),
+                                     "In", 
+                                     ifelse(.data$variable %in% 
+                                              c("GWout", "E"),
+                                            "Out",
+                                            ifelse(.data$value < 0,
+                                                   "In", "Out"))),
+                  value = abs(.data$value)) %>%
+           mutate(value = ifelse(.data$variable == "dV" & 
+                                   .data$direction == "Out",
+                                 0, .data$value),
+                  direction = ifelse(.data$variable == "dV" & 
+                                   .data$direction == "Out" &
+                                   .data$value == 0,
+                                 "In", .data$direction))
+
+plot_budget(plot_df, "Pleasant", "In", "Flux (ac-ft)") + scale_y_continuous()
+plot_budget(plot_df, "Long", "In", "Flux (ac-ft)") + scale_y_continuous()
+plot_budget(plot_df, "Plainfield", "In", "Flux (ac-ft)") + scale_y_continuous()
+
+```
+
+<br>
+
+**Outflows**
+
+```{r echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=4}
+plot_df <- acft_df %>%
+           select(.data$scenario, .data$date, .data$lake, .data$GWin, .data$P, 
+                     .data$E, .data$GWout, .data$dV) %>%
+           melt(id.vars = c("date", "lake", "scenario")) %>%
+           mutate(direction = ifelse(.data$variable %in% c("GWin", "P"),
+                                     "In", 
+                                     ifelse(.data$variable %in% 
+                                              c("GWout", "E"),
+                                            "Out",
+                                            ifelse(.data$value < 0,
+                                                   "In", "Out"))),
+                  value = abs(.data$value)) %>%
+           mutate(value = ifelse(.data$variable == "dV" & 
+                                   .data$direction == "In",
+                                 0, .data$value),
+                  direction = ifelse(.data$variable == "dV" & 
+                                   .data$direction == "In" &
+                                   .data$value == 0,
+                                 "Out", .data$direction))
+
+plot_budget(plot_df, "Pleasant", "Out", "Flux (ac-ft)") + scale_y_continuous()
+plot_budget(plot_df, "Long", "Out", "Flux (ac-ft)") + scale_y_continuous()
+plot_budget(plot_df, "Plainfield", "Out", "Flux (ac-ft)") + scale_y_continuous()
+
+```
+
+<br>
+
+## Correlations
+
+```{r echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=4}
+df_R2 <- NULL
+for (lake in unique(inches_df$lake)) {
+  for (scenario in unique(inches_df$scenario)) {
+    subset_df <- inches_df %>% 
+                 filter(.data$lake == !!lake, 
+                        .data$scenario == !!scenario)
+    model     <- lm(dlevel~GWnet, subset_df)
+    R2_GWnet  <- round(summary(model)$adj.r.squared,2)
+    model     <- lm(dlevel~P_E, subset_df)
+    R2_P_E  <- round(summary(model)$adj.r.squared,2)
+    model     <- lm(GWnet~P_E, subset_df)
+    R2_P_E_GWnet  <- round(summary(model)$adj.r.squared,2)
+    this_df   <- data.frame(lake = lake,
+                            scenario = scenario,
+                            R2_GWnet = R2_GWnet,
+                            R2_P_E = R2_P_E,
+                            R2_P_E_GWnet = R2_P_E_GWnet)
+    df_R2 <- rbind(df_R2, this_df)
+  }
+}
+df_R2$lake <- factor(df_R2$lake, levels = c("Pleasant", "Long", "Plainfield"))
+df_R2$scenario <- factor(df_R2$scenario, levels = scenarios$scenario_name)
+
+# GW Net -----------------------------------------------------------------------
+ggplot(inches_df,
+       aes(x = -.data$GWnet, 
+           y = .data$dlevel,
+           color = .data$scenario,
+           fill = .data$scenario)) +
+  geom_point() +
+  geom_smooth(method = "lm") + 
+  geom_text(data = subset(df_R2, scenario == "No Irrigation"),
+            aes(x = -25,
+                y = 30,
+                label = sprintf("R2 = %0.2f", .data$R2_GWnet),
+                hjust = 0,
+                family = "Segoe UI"),
+            size = 3.5,
+            color = scenarios$color[scenarios$scenario_name == "No Irrigation"]) + 
+  geom_text(data = subset(df_R2, scenario == "Current Irrigation"),
+            aes(x = -25,
+                y = 25,
+                label = sprintf("R2 = %0.2f", .data$R2_GWnet),
+                hjust = 0,
+                family = "Segoe UI"),
+            size = 3.5,
+            color = scenarios$color[scenarios$scenario_name == "Current Irrigation"]) +
+  facet_grid(~lake) +
+  labs(x = "Net Groundwater Flow (in/yr)",
+       y = "Change in Lake Level (in/yr)") +
+  scale_color_manual(name = "",
+                     breaks = scenarios$scenario_name,
+                     values = scenarios$colors) +
+  scale_fill_manual(name = "",
+                     breaks = scenarios$scenario_name,
+                     values = scenarios$colors) +
+  theme_bw() +
+  theme(text = element_text(family = "Segoe UI Semilight",
+                            size = 10),
+        legend.text.align = 0,
+        legend.position = "top")
+
+ggplot(inches_df,
+       aes(x = .data$P_E, 
+           y = .data$dlevel,
+           color = .data$scenario,
+           fill = .data$scenario)) +
+  geom_point() +
+  geom_smooth(method = "lm")  + 
+  geom_text(data = subset(df_R2, scenario == "No Irrigation"),
+            aes(x = 2,
+                y = 30,
+                label = sprintf("R2 = %0.2f", .data$R2_P_E),
+                hjust = 0,
+                family = "Segoe UI"),
+            size = 3.5,
+            color = scenarios$color[scenarios$scenario_name == "No Irrigation"]) + 
+  geom_text(data = subset(df_R2, scenario == "Current Irrigation"),
+            aes(x = 2,
+                y = 25,
+                label = sprintf("R2 = %0.2f", .data$R2_P_E),
+                hjust = 0,
+                family = "Segoe UI"),
+            size = 3.5,
+            color = scenarios$color[scenarios$scenario_name == "Current Irrigation"]) +
+  facet_grid(~lake) +
+  labs(x = "Precipitation - Evaporation (in/yr)",
+       y = "Change in Lake Level (in/yr)") +
+  scale_color_manual(name = "",
+                     breaks = scenarios$scenario_name,
+                     values = scenarios$colors) +
+  scale_fill_manual(name = "",
+                     breaks = scenarios$scenario_name,
+                     values = scenarios$colors) +
+  theme_bw() +
+  theme(text = element_text(family = "Segoe UI Semilight",
+                            size = 10),
+        legend.text.align = 0,
+        legend.position = "top")
+
+```

@@ -1,0 +1,717 @@
+---
+title: "CSLS_chem_lake_gw"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+vignette: >
+  %\VignetteIndexEntry{CSLS_chem_lake_gw}
+  %\VignetteEngine{knitr::rmarkdown}
+  \usepackage[utf8]{inputenc}
+---
+
+```{r setup, echo=FALSE, warning=FALSE, message=FALSE}
+library(knitr)
+library(CSLSfluxes)
+library(dplyr)
+library(stringr)
+library(lubridate)
+library(reshape2)
+library(ggplot2)
+library(extrafont)
+
+text_size   <- 12
+lakes       <- c("Pleasant", "Long", "Plainfield")
+water_chem  <- CSLSdata::water_chem
+water_chem  <- water_chem %>%
+               filter(!site_type %in% c("deep"))
+water_chem$lake <- factor(water_chem$lake, levels = c("Precip", lakes))
+```
+
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE}
+plot_summary <- function(df,
+                        yaxis_type = "number",
+                        text_size = 12,
+                        site_types = c("precipitation", "upgradient", "nogradient", 
+                                       "downgradient", "lake", "lake_bottom"),
+                        site_labels = c("Precip", "Upgr.", "Nogr.", 
+                                        "Downgr.", "Lake Surf", "Lake Bot."),
+                        site_colors = c("#1F78B4", "#33A02C", "#B15928", 
+                                        "#B2DF8A", "#FB9A99", "#E31A1C")){
+
+  df$site_type <- factor(df$site_type, levels = site_types)
+  ylabel       <- sprintf("%s (%s)",
+                          unique(df$name),
+                          str_to_lower(unique(df$units)))
+
+  plot_obj <- ggplot(df,
+                     aes(x = .data$lake,
+                         y = .data$result,
+                         group = .data$site_type,
+                         color = .data$site_type,
+                         fill = .data$site_type)) +
+              geom_hline(aes(yintercept = min(.data$loq, na.rm = TRUE),
+                             linetype = "LOQ"),
+                         color = "grey40",
+                         size = 1) +
+              geom_hline(aes(yintercept = min(.data$lod, na.rm = TRUE),
+                             linetype = "LOD"),
+                         color = "grey40",
+                         size = 1) +
+              geom_point(position = position_jitterdodge(jitter.width = 0.1,
+                                                         dodge.width = 0.4),
+                         size = 2.5,
+                         color = "grey70") +
+              stat_summary(fun.y = mean,
+                           fun.ymin = min,
+                           fun.ymax = max,
+                           shape = "\U25AC",
+                           size = 1,
+                           position = position_dodge(width = 0.4)) +
+              labs(x = "", y = ylabel, title = "Everything", 
+                   color = "Site", fill = "Site") +
+              scale_linetype_manual(name = "",
+                                    breaks = c("LOQ", "LOD"),
+                                    values = c("longdash", "dotted")) +
+              scale_color_manual(name = "Sites",
+                                 breaks = site_types,
+                                 limits = site_types,
+                                 labels = site_labels,
+                                 values = site_colors) +
+              guides(color = guide_legend(order = 1),
+                     fill = FALSE,
+                     linetype = guide_legend(order = 2)) +
+              theme_bw() +
+              theme(text = element_text(family = "Segoe UI Semilight",
+                                        size = text_size),
+                    panel.grid.major = element_blank(),
+                    panel.grid.minor = element_blank(),
+                    legend.position = "top",
+                    plot.title = element_text(hjust = 0.5))
+
+  if (yaxis_type == "log") {
+    plot_obj <- plot_obj + scale_y_log10()
+  }
+
+  return(plot_obj)
+}
+
+
+```
+
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE}
+plot_timeseries <- function(df,
+                            yaxis_type = "number",
+                            text_size = 12,
+                            site_types = c("upgradient",
+                                           "nogradient",
+                                           "downgradient"),
+                            site_labels = c("Upgr.", "Nogr.", "Downgr."),
+                            site_colors = c("#33A02C", "#B15928", "#B2DF8A"),
+                            site_shapes = c(21, 21, 21)){
+  ylabel   <- sprintf("%s (%s)",
+                      unique(df$name),
+                      str_to_lower(unique(df$units)))
+  df       <- df %>% arrange(.data$date)
+
+  plot_obj <- ggplot(df,
+                     aes(x = floor_date(.data$date, unit = "day"),
+                         y = .data$result,
+                         group = .data$site_id,
+                         color = .data$site_type,
+                         fill = .data$site_type,
+                         shape = .data$site_type)) +
+              geom_hline(aes(yintercept = min(.data$loq, na.rm = TRUE),
+                             linetype = "LOQ"),
+                         color = "grey40",
+                         size = 1) +
+              geom_hline(aes(yintercept = min(.data$lod, na.rm = TRUE),
+                             linetype = "LOD"),
+                         color = "grey40",
+                         size = 1) +
+              geom_path() +
+              geom_point(size = 2.5) +
+              facet_grid(~lake) +
+              labs(x = "", y = ylabel, title = "Groundwater", color = "Site") +
+              scale_x_datetime(breaks = "6 months",
+                               date_labels = "%b %y") +
+              scale_linetype_manual(name = "",
+                                    breaks = c("LOQ", "LOD"),
+                                    values = c("longdash", "dotted")) +
+              scale_color_manual(name = "Sites",
+                                 breaks = site_types,
+                                 limits = site_types,
+                                 labels = site_labels,
+                                 values = site_colors) +
+              scale_fill_manual(name = "Sites",
+                                breaks = site_types,
+                                limits = site_types,
+                                labels = site_labels,
+                                values = site_colors) +
+              scale_shape_manual(name = "Sites",
+                                 breaks = site_types,
+                                 limits = site_types,
+                                 labels = site_labels,
+                                 values = site_shapes) +
+              theme_bw() +
+              theme(text = element_text(family = "Segoe UI Semilight",
+                                        size = text_size),
+                    legend.position = "top",
+                    plot.title = element_text(hjust = 0.5))
+  if (yaxis_type == "log") {
+    plot_obj <- plot_obj + scale_y_log10()
+  }
+  return(plot_obj)
+}
+
+```
+
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE}
+plot_timeseries_by_year <- function(df,
+                            yaxis_type = "number",
+                            text_size = 12){
+  ylabel   <- sprintf("%s (%s)",
+                      unique(df$name),
+                      str_to_lower(unique(df$units)))
+  df$year  <- as.factor(year(df$date))
+  df$date  <- yday(df$date)
+  df       <- df %>% arrange(.data$date)
+  path_df  <- df %>%
+              filter(.data$site_type %in% c("lake", "upgradient", "downgradient"))
+
+  plot_obj <- ggplot(df,
+                     aes(x = as.Date(.data$date, origin = as.Date("2018-01-01")),
+                         y = .data$result,
+                         group = .data$year,
+                         color = .data$year,
+                         fill = .data$year,
+                         shape = .data$year)) +
+              geom_hline(aes(yintercept = min(.data$loq, na.rm = TRUE),
+                             linetype = "LOQ"),
+                         color = "grey40",
+                         size = 1) +
+              geom_hline(aes(yintercept = min(.data$lod, na.rm = TRUE),
+                             linetype = "LOD"),
+                         color = "grey40",
+                         size = 1) +
+              geom_path(data = path_df) +
+              geom_point(size = 2.5) +
+              facet_grid(~lake) +
+              labs(x = "", y = ylabel, title = "Lake Surface", color = "Site") +
+              scale_x_date(date_breaks = "2 months",
+                           date_labels = "%b") +
+              scale_linetype_manual(name = "",
+                                    breaks = c("LOQ", "LOD"),
+                                    values = c("longdash", "dotted")) +
+              scale_color_brewer(name = "Year",
+                                 palette = "Paired") +
+              scale_fill_brewer(name = "Year",
+                                palette = "Paired") +
+              scale_shape_discrete(name = "Year") +
+              guides(linetype = guide_legend(order = 2), 
+                     color = guide_legend(order = 1), 
+                     fill = guide_legend(order = 1), 
+                     shape = guide_legend(order = 1)) +
+              theme_bw() +
+              theme(text = element_text(family = "Segoe UI Semilight",
+                                        size = text_size),
+                    legend.position = "top",
+                    plot.title = element_text(hjust = 0.5))
+  if (yaxis_type == "log") {
+    plot_obj <- plot_obj + scale_y_log10()
+  }
+  return(plot_obj)
+}
+
+```
+
+# Overview {#top}
+The data used here includes data from both SWIMS and LDES, with most
+precipitation data drawn from NADP. Duplicates between SWIMS and LDES as well as
+samples labeled as blanks or duplicates are removed.
+
+<br>
+
+# Acidity
+
+## pH
+[Back to top](#top)
+
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=4, fig.align="center"}
+parameter     <-"PH LAB"
+plotting_name <- "pH"
+
+this_parameter <- filter_parameter(water_chem, parameter, plotting_name,
+                                   note_lake_bottom = TRUE)
+this_gw        <- this_parameter %>% 
+                  filter(.data$site_type %in% 
+                           c("upgradient", "nogradient", "downgradient"))
+this_lake      <- this_parameter %>% filter(.data$site_type == "lake")
+
+plot_summary(this_parameter, yaxis_type = "log", text_size)
+plot_timeseries(this_gw, yaxis_type = "number", text_size)
+plot_timeseries_by_year(this_lake, text_size = text_size)
+```
+
+## Alkalinity, Total CaCO3
+[Back to top](#top)
+
+
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=4, fig.align="center"}
+parameter     <- c("ALKALINITY TOTAL CACO3", "ALKALINITY TOTAL GRAN AVAL UEQ/L")
+plotting_name <- "Alkalinity Total CaCO3"
+
+this_parameter <- filter_parameter(water_chem, parameter, plotting_name,
+                                   note_lake_bottom = TRUE)
+this_gw        <- this_parameter %>% 
+                  filter(.data$site_type %in% 
+                           c("upgradient", "nogradient", "downgradient"))
+this_lake      <- this_parameter %>% filter(.data$site_type == "lake")
+
+plot_summary(this_parameter, yaxis_type = "log", text_size)
+plot_timeseries(this_gw, yaxis_type = "number", text_size)
+plot_timeseries_by_year(this_lake, text_size = text_size)
+```
+
+<br>
+
+# Salinity
+
+## Conductivity
+[Back to top](#top)
+
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=4, fig.align="center"}
+parameter     <-"CONDUCTIVITY, UMHOS/CM @ 25C"
+plotting_name <- "Conductivity"
+
+this_parameter <- filter_parameter(water_chem, parameter, plotting_name,
+                                   note_lake_bottom = TRUE)
+this_gw        <- this_parameter %>% 
+                  filter(.data$site_type %in% 
+                           c("upgradient", "nogradient", "downgradient"))
+this_lake      <- this_parameter %>% filter(.data$site_type == "lake")
+
+plot_summary(this_parameter, yaxis_type = "log", text_size)
+plot_timeseries(this_gw, yaxis_type = "number", text_size)
+plot_timeseries_by_year(this_lake, text_size = text_size)
+```
+
+<br>
+
+# Major Cations
+
+## Calcium, Total Recoverable
+[Back to top](#top)
+
+Notes:
+
+* Not shown in time series: GW Monitoring Well PFL-09, which has very high Ca
+(>> 100 mg/L).
+  
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=4, fig.align="center"}
+parameter     <-"CALCIUM TOTAL RECOVERABLE"
+plotting_name <- "Total Recoverable Calcium"
+
+this_parameter <- filter_parameter(water_chem, 
+                                   parameter, 
+                                   plotting_name,
+                                   no_bad_well = TRUE,
+                                   note_lake_bottom = TRUE)
+this_gw    <- this_parameter %>% 
+              filter(.data$site_type %in% 
+                       c("upgradient", "nogradient", "downgradient"))
+this_lake <- this_parameter %>% filter(.data$site_type == "lake")
+this_parameter <- filter_parameter(water_chem, parameter, plotting_name)
+
+plot_summary(this_parameter, yaxis_type = "log", text_size)
+plot_timeseries(this_gw, yaxis_type = "number", text_size)
+plot_timeseries_by_year(this_lake, text_size = text_size)
+```
+
+## Magnesium, Total Recoverable
+[Back to top](#top)
+
+Notes:
+
+* Not shown in time series: GW Monitoring Well PFL-09, which has very high Mg
+(>> 100 mg/L).
+
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=4, fig.align="center"}
+parameter     <- "MAGNESIUM TOTAL RECOVERABLE"
+plotting_name <- "Total Recoverabel Magnesium"
+
+this_parameter <- filter_parameter(water_chem, parameter, plotting_name,
+                                   no_bad_well = TRUE,
+                                   note_lake_bottom = TRUE)
+this_gw        <- this_parameter %>% 
+                  filter(.data$site_type %in% 
+                           c("upgradient", "nogradient", "downgradient"))
+this_lake      <- this_parameter %>% filter(.data$site_type == "lake")
+this_parameter <- filter_parameter(water_chem, parameter, plotting_name)
+
+plot_summary(this_parameter, yaxis_type = "log", text_size)
+plot_timeseries(this_gw, yaxis_type = "number", text_size)
+plot_timeseries_by_year(this_lake, text_size = text_size)
+```
+
+## Sodium, Total Recoverable
+[Back to top](#top)
+
+Notes:
+
+* Not shown in time series: GW Monitoring Well PSNT-06, which has high Na
+(> 60 mg/L).
+
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=4, fig.align="center"}
+parameter     <-"SODIUM TOTAL RECOVERABLE"
+plotting_name <- "Total Recoverable Sodium"
+
+this_parameter <- filter_parameter(water_chem, parameter, plotting_name,
+                                   note_lake_bottom = TRUE)
+this_gw        <- this_parameter %>% 
+                  filter(.data$site_type %in% 
+                           c("upgradient", "nogradient", "downgradient")) %>%
+                  filter(.data$site_id != "PSNT-06")
+this_lake      <- this_parameter %>% filter(.data$site_type == "lake") 
+
+plot_summary(this_parameter, yaxis_type = "log", text_size)
+plot_timeseries(this_gw, yaxis_type = "number", text_size)
+plot_timeseries_by_year(this_lake, text_size = text_size)
+```
+
+## Potassium, Total Recoverable
+[Back to top](#top)
+
+
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=4, fig.align="center"}
+parameter     <-"POTASSIUM TOTAL RECOVERABLE"
+plotting_name <- "Total Recoverable Potassium"
+
+this_parameter <- filter_parameter(water_chem, parameter, plotting_name,
+                                   note_lake_bottom = TRUE)
+this_gw        <- this_parameter %>% 
+                  filter(.data$site_type %in% 
+                           c("upgradient", "nogradient", "downgradient"))
+this_lake      <- this_parameter %>% filter(.data$site_type == "lake")
+
+plot_summary(this_parameter, yaxis_type = "log", text_size)
+plot_timeseries(this_gw, yaxis_type = "number", text_size)
+plot_timeseries_by_year(this_lake, text_size = text_size)
+```
+
+## Ca:Mg Ratio
+[Back to top](#top)
+
+Notes:
+
+* Included here: GW Monitoring Well PFL-09, which has very high Ca & Mg (>> 100
+mg/L).
+
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=4, fig.align="center"}
+parameter     <-"CALCIUM TOTAL RECOVERABLE"
+plotting_name <- "Total Recoverable Calcium"
+Ca            <- filter_parameter(water_chem, parameter, plotting_name,
+                                   note_lake_bottom = TRUE)
+Ca            <- Ca %>%
+                 select(.data$lake, .data$site_type, .data$date, .data$result,
+                        .data$site_id)
+
+parameter     <- "MAGNESIUM TOTAL RECOVERABLE"
+plotting_name <- "Total Recoverabel Magnesium"
+Mg            <- filter_parameter(water_chem, parameter, plotting_name)
+Mg            <- Mg %>%
+                 select(.data$lake, .data$site_type, .data$date, .data$result,
+                        .data$site_id)
+
+Ca_Mg         <- merge(Ca, Mg, by = c("date", "lake", "site_type", "site_id"))
+Ca_Mg$result  <- Ca_Mg$result.x/Ca_Mg$result.y
+Ca_Mg$lod     <- 0
+Ca_Mg$loq     <- 0
+
+this_gw        <- Ca_Mg %>% 
+                  filter(.data$site_type %in% 
+                           c("upgradient", "nogradient", "downgradient"))
+this_lake      <- Ca_Mg %>% filter(.data$site_type == "lake")
+
+plot_summary(Ca_Mg, yaxis_type = "log", text_size)
+plot_timeseries(this_gw, yaxis_type = "number", text_size)
+plot_timeseries_by_year(this_lake, text_size = text_size)
+```
+
+## Hardness, Total Recoverable Calculation
+[Back to top](#top)
+
+Notes:
+
+* Not shown in time series: GW Monitoring Well PFL-09, which has very high
+hardness (>> 1000 mg/L).
+
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=4, fig.align="center"}
+parameter     <-"HARDNESS TOTAL RECOVERABLE CALCULATION"
+plotting_name <- "Total Recoverable Hardness"
+
+this_parameter <- filter_parameter(water_chem, parameter, plotting_name,
+                                   no_bad_well = TRUE,
+                                   note_lake_bottom = TRUE)
+this_gw        <- this_parameter %>% 
+                  filter(.data$site_type %in% 
+                           c("upgradient", "nogradient", "downgradient"))
+this_lake      <- this_parameter %>% filter(.data$site_type == "lake")
+this_parameter <- filter_parameter(water_chem, parameter, plotting_name)
+
+plot_summary(this_parameter, yaxis_type = "log", text_size)
+plot_timeseries(this_gw, yaxis_type = "number", text_size)
+plot_timeseries_by_year(this_lake, text_size = text_size)
+```
+
+<br>
+
+# Major Anions
+
+## Chloride
+[Back to top](#top)
+
+Notes:
+
+* Not shown in time series: GW Monitoring Well PSNT-06, which has high Cl
+(30-170 mg/L).
+
+
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=4, fig.align="center"}
+parameter     <-"CHLORIDE"
+plotting_name <- "Chloride"
+
+this_parameter <- filter_parameter(water_chem, parameter, plotting_name,
+                                   note_lake_bottom = TRUE)
+this_gw        <- this_parameter %>% 
+                  filter(.data$site_type %in% 
+                           c("upgradient", "nogradient", "downgradient")) %>%
+                  filter(.data$site_id != "PSNT-06")
+this_lake      <- this_parameter %>% filter(.data$site_type == "lake")
+
+plot_summary(this_parameter, yaxis_type = "log", text_size)
+plot_timeseries(this_gw, yaxis_type = "number", text_size)
+plot_timeseries_by_year(this_lake, text_size = text_size)
+```
+
+## Sulfate, Total
+[Back to top](#top)
+
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=4, fig.align="center"}
+parameter     <- c("SULFATE TOTAL", "SULFATE DISS, AS SO4")
+plotting_name <- "Sulfate"
+
+this_parameter <- filter_parameter(water_chem, parameter, plotting_name,
+                                   note_lake_bottom = TRUE)
+this_gw        <- this_parameter %>% 
+                  filter(.data$site_type %in% 
+                           c("upgradient", "nogradient", "downgradient"))
+this_lake      <- this_parameter %>% filter(.data$site_type == "lake")
+
+plot_summary(this_parameter, yaxis_type = "log", text_size)
+plot_timeseries(this_gw, yaxis_type = "number", text_size)
+plot_timeseries_by_year(this_lake, text_size = text_size)
+```
+
+<br>
+
+# Nutrients
+
+## Phosphorus, Total
+[Back to top](#top)
+
+Notes:
+
+* Not shown in time series: GW Monitoring Well PFL-09, which gets to very high
+TP (10 mg/L) and GW Monitoring Well PSNT-05, which also has high TP (0.25-2.5 mg/L)
+* Otherwise, groundwater levels are typically similar to or slightly higher than
+lake levels
+* Lake values are often below the limit of quality, particularly at Pleasant
+Lake.
+
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=4, fig.align="center"}
+parameter     <-"PHOSPHORUS TOTAL"
+plotting_name <- "Total Phosphorus"
+
+this_parameter <- filter_parameter(water_chem, parameter, plotting_name,
+                                   no_bad_well = TRUE,
+                                   note_lake_bottom = TRUE)
+this_gw        <- this_parameter %>% 
+                  filter(.data$site_type %in% 
+                           c("upgradient", "nogradient", "downgradient")) %>%
+                  filter(.data$site_id != "PSNT-05")
+this_lake      <- this_parameter %>% filter(.data$site_type == "lake") 
+this_parameter <- filter_parameter(water_chem, parameter, plotting_name)
+
+plot_summary(this_parameter, yaxis_type = "log", text_size)
+plot_timeseries(this_gw, yaxis_type = "number", text_size)
+plot_timeseries_by_year(this_lake, text_size = text_size)
+```
+
+## Nitrogen, NH3-N Dissolved
+[Back to top](#top)
+
+Notes:
+
+* NH3-N is behaves similarly at all three lakes
+* NH3-N is almost non-existant in groundwater (at/below the limit of quality in
+all but two samples) and still very low in lakes
+
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=4, fig.align="center"}
+parameter     <-"NITROGEN NH3-N DISS"
+plotting_name <- "Dissolved Ammonium as Nitrogen"
+
+this_parameter <- filter_parameter(water_chem, parameter, plotting_name,
+                                   note_lake_bottom = TRUE)
+this_gw        <- this_parameter %>% 
+                  filter(.data$site_type %in% 
+                           c("upgradient", "nogradient", "downgradient"))
+this_lake      <- this_parameter %>% filter(.data$site_type == "lake")
+
+plot_summary(this_parameter, yaxis_type = "log", text_size)
+plot_timeseries(this_gw, yaxis_type = "number", text_size)
+plot_timeseries_by_year(this_lake, text_size = text_size)
+```
+
+## Nitrogen, NO3 + NO2 Dissolved (as N)
+[Back to top](#top)
+
+Notes:
+
+* All sites have at least one well with appreciable NO3/NO2, but most
+groundwater and lake samples are near the limit of quality.
+* Pleasant Lake has slightly higher (i.e., usually measureable) lake values
+than Long and Plainfield, which are all non-detect.
+
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=4, fig.align="center"}
+parameter     <-"NITROGEN NO3+NO2 DISS (AS N)"
+plotting_name <- "Dissolved Nitrate/Nitrite as Nitrogen"
+
+this_parameter <- filter_parameter(water_chem, parameter, plotting_name,
+                                   note_lake_bottom = TRUE)
+this_gw        <- this_parameter %>% 
+                  filter(.data$site_type %in% 
+                           c("upgradient", "nogradient", "downgradient"))
+this_lake      <- this_parameter %>% filter(.data$site_type == "lake")
+
+plot_summary(this_parameter, yaxis_type = "log", text_size)
+plot_timeseries(this_gw, yaxis_type = "number", text_size)
+plot_timeseries_by_year(this_lake, text_size = text_size)
+```
+
+<br>
+
+# Metals
+
+## Aluminum, Total Recoverable
+[Back to top](#top)
+
+Notes:
+
+* Not shown in time series: GW Monitoring Well PFL-09, which has very high Al
+(>> 20,000 ug/L) and PSNT-05, which also has high Al (2,500-20,000 ug/L).
+
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=4, fig.align="center"}
+parameter     <-"ALUMINUM,TOTAL RECOVERABLE"
+plotting_name <- "Total Recoverable Aluminum"
+
+this_parameter <- filter_parameter(water_chem, parameter, plotting_name,
+                                   no_bad_well = TRUE,
+                                   note_lake_bottom = TRUE)
+this_gw        <- this_parameter %>% 
+                  filter(.data$site_type %in% 
+                           c("upgradient", "nogradient", "downgradient")) %>%
+                  filter(.data$site_id != "PSNT-05")
+this_lake      <- this_parameter %>% filter(.data$site_type == "lake")
+this_parameter <- filter_parameter(water_chem, parameter, plotting_name)
+
+plot_summary(this_parameter, yaxis_type = "log", text_size)
+plot_timeseries(this_gw, yaxis_type = "number", text_size)
+plot_timeseries_by_year(this_lake, text_size = text_size)
+```
+
+## Iron, Total Recoverable
+[Back to top](#top)
+
+Notes:
+
+* Not shown in time series: GW Monitoring Well PFL-09, which has very high Fe
+(20-400 mg/L) and PSNT-05, which also has high Fe (10-50 mg/L).
+* Groundwater levels are generally low (near or below the limit of quality) with
+the exception of one well at Pleasant (PSNT-05) and one well at Plainfield
+(PFL-09).
+* Iron was only measured at the lake surfaces one time (in Feb 2019) and was
+below detection at Pleasant, below the limit of quality at Plainfield, and less
+than 1 mg/L at Long.
+
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=4, fig.align="center"}
+parameter     <-"IRON TOTAL RECOVERABLE"
+plotting_name <- "Total Recoverable Iron"
+
+this_parameter <- filter_parameter(water_chem, parameter, plotting_name,
+                                   note_lake_bottom = TRUE,
+                                   no_bad_well = TRUE)
+this_gw        <- this_parameter %>% 
+                  filter(.data$site_type %in% 
+                           c("upgradient", "nogradient", "downgradient")) %>%
+                  filter(.data$site_id != "PSNT-05")
+this_lake      <- this_parameter %>% filter(.data$site_type == "lake")
+this_parameter <- filter_parameter(water_chem, parameter, plotting_name,
+                                   note_lake_bottom = TRUE)
+
+plot_summary(this_parameter, yaxis_type = "log", text_size)
+plot_timeseries(this_gw, yaxis_type = "number", text_size)
+plot_timeseries_by_year(this_lake, text_size = text_size)
+```
+
+## Manganese, Total Recoverable
+[Back to top](#top)
+
+Notes:
+
+* Not shown in time series: GW Monitoring Well PFL-09, which has very high Mn
+(1,000-10,000 ug/L) and PSNT-05, which also has high Mn (up to 3,000 ug/L).
+
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=4, fig.align="center"}
+parameter     <-"MANGANESE, TOTAL RECOVERABLE"
+plotting_name <- "Total Recoverable Manganese"
+
+this_parameter <- filter_parameter(water_chem, parameter, plotting_name,
+                                   note_lake_bottom = TRUE,
+                                   no_bad_well = TRUE)
+this_gw        <- this_parameter %>% 
+                  filter(.data$site_type %in% 
+                           c("upgradient", "nogradient", "downgradient")) %>%
+                  filter(.data$site_id != "PSNT-05")
+this_lake      <- this_parameter %>% filter(.data$site_type == "lake")
+this_parameter <- filter_parameter(water_chem, parameter, plotting_name,
+                                   note_lake_bottom = TRUE)
+
+plot_summary(this_parameter, yaxis_type = "log", text_size)
+plot_timeseries(this_gw, yaxis_type = "number", text_size)
+plot_timeseries_by_year(this_lake, text_size = text_size)
+```
+
+<br>
+
+# Other
+
+## Silica, Dissolved (as SiO2)
+[Back to top](#top)
+
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.width=6.5, fig.height=4, fig.align="center"}
+parameter     <-"SILICA, DISSOLVED (MG/L AS SI02)"
+plotting_name <- "Dissolved Silica as SiO2"
+
+this_parameter <- filter_parameter(water_chem, parameter, plotting_name,
+                                   note_lake_bottom = TRUE)
+this_gw        <- this_parameter %>% 
+                  filter(.data$site_type %in% 
+                           c("upgradient", "nogradient", "downgradient"))
+this_lake      <- this_parameter %>% filter(.data$site_type == "lake")
+
+plot_summary(this_parameter, yaxis_type = "log", text_size)
+plot_timeseries(this_gw, yaxis_type = "number", text_size)
+plot_timeseries_by_year(this_lake, text_size = text_size)
+```
+
+
