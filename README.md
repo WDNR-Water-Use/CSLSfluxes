@@ -5,10 +5,10 @@ Wisconsin Department of Natural Resources related to lake water and solute
 budgets in the Central Sands Lakes Study (CSLS).
 
 The key dataset included here contains summary metrics of the solute budget for
-each 38-year scenario (`data/MODFLOW_Mg_metrics`). The full datasets of monthly
-lake solute estimates are quite large and a bit unwieldy to include here, but
-can be found as .Rda datasets (which compress better than csv files) within
-`data-raw/`. These calculations are performed in the script
+each 38-year scenario (`data/MODFLOW_Mg_metrics`). 
+
+The full datasets of monthly lake solute estimates are quite large and a bit 
+unwieldy to include here, but can be recreated via the script
 `data-raw/calculate_MODFLOW_Mg.R`.
 
 Details on data and code can also be found in `inst/CSLSfluxes_1.0.0.pdf`.
